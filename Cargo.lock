@@ -2645,7 +2645,6 @@ version = "0.30.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2e99fb7a497b1e3339bc746195567ed8d3e24945ecd636e3619d20b9de9e9149"
 dependencies = [
- "cc",
  "pkg-config",
  "vcpkg",
 ]
@@ -2890,7 +2889,7 @@ dependencies = [
 
 [[package]]
 name = "muralis"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "anyhow",
  "clap",
@@ -2903,7 +2902,7 @@ dependencies = [
 
 [[package]]
 name = "muralis-core"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2929,7 +2928,7 @@ dependencies = [
 
 [[package]]
 name = "muralis-daemon"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "anyhow",
  "chrono",
@@ -2946,7 +2945,7 @@ dependencies = [
 
 [[package]]
 name = "muralis-gui"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "anyhow",
  "iced",
