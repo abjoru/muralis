@@ -4,17 +4,41 @@ use crate::error::{MuralisError, Result};
 use crate::models::{BackendType, DisplayMode};
 use crate::paths::MuralisPaths;
 
-#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
     pub general: GeneralConfig,
     pub display: DisplayConfig,
-    pub sources: SourcesConfig,
+    #[serde(default = "default_sources")]
+    pub sources: toml::Table,
     #[serde(default)]
     pub workspaces: Vec<WorkspaceConfig>,
     #[serde(default)]
     pub schedules: Vec<ScheduleEntry>,
     pub filter: FilterConfig,
+}
+
+fn default_sources() -> toml::Table {
+    let mut table = toml::Table::new();
+    let mut wh = toml::Table::new();
+    wh.insert("enabled".into(), toml::Value::Boolean(true));
+    wh.insert("categories".into(), toml::Value::String("100".into()));
+    wh.insert("purity".into(), toml::Value::String("100".into()));
+    table.insert("wallhaven".into(), toml::Value::Table(wh));
+    table
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            general: GeneralConfig::default(),
+            display: DisplayConfig::default(),
+            sources: default_sources(),
+            workspaces: Vec::new(),
+            schedules: Vec::new(),
+            filter: FilterConfig::default(),
+        }
+    }
 }
 
 impl Config {
@@ -125,58 +149,6 @@ impl Default for FilterConfig {
     }
 }
 
-#[derive(Debug, Default, Clone, Serialize, Deserialize)]
-#[serde(default)]
-pub struct SourcesConfig {
-    pub wallhaven: WallhavenConfig,
-    pub unsplash: UnsplashConfig,
-    pub pexels: PexelsConfig,
-    #[serde(default)]
-    pub feeds: Vec<FeedConfig>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
-pub struct WallhavenConfig {
-    pub enabled: bool,
-    pub api_key: Option<String>,
-    pub categories: String,
-    pub purity: String,
-}
-
-impl Default for WallhavenConfig {
-    fn default() -> Self {
-        Self {
-            enabled: true,
-            api_key: None,
-            categories: "100".into(),
-            purity: "100".into(),
-        }
-    }
-}
-
-#[derive(Debug, Default, Clone, Serialize, Deserialize)]
-#[serde(default)]
-pub struct UnsplashConfig {
-    pub enabled: bool,
-    pub access_key: Option<String>,
-}
-
-#[derive(Debug, Default, Clone, Serialize, Deserialize)]
-#[serde(default)]
-pub struct PexelsConfig {
-    pub enabled: bool,
-    pub api_key: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct FeedConfig {
-    pub name: String,
-    pub url: String,
-    #[serde(default)]
-    pub enabled: bool,
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -188,8 +160,9 @@ mod tests {
         assert_eq!(config.display.mode, DisplayMode::Random);
         assert_eq!(config.display.interval, "30m");
         assert_eq!(config.filter.min_width, 1920);
-        assert!(config.sources.wallhaven.enabled);
-        assert!(!config.sources.unsplash.enabled);
+        // wallhaven enabled by default
+        let wh = config.sources.get("wallhaven").unwrap().as_table().unwrap();
+        assert_eq!(wh.get("enabled").unwrap().as_bool(), Some(true));
     }
 
     #[test]
@@ -261,11 +234,11 @@ tags = ["bright", "morning"]
         let config: Config = toml::from_str(toml_str).unwrap();
         assert_eq!(config.general.cache_max_mb, 1000);
         assert_eq!(config.display.transition.r#type, "wipe");
-        assert_eq!(
-            config.sources.wallhaven.api_key.as_deref(),
-            Some("test_key")
-        );
-        assert_eq!(config.sources.feeds.len(), 1);
+        // sources is now a raw table
+        let wh = config.sources.get("wallhaven").unwrap().as_table().unwrap();
+        assert_eq!(wh.get("api_key").unwrap().as_str(), Some("test_key"));
+        let feeds = config.sources.get("feeds").unwrap().as_array().unwrap();
+        assert_eq!(feeds.len(), 1);
         assert_eq!(config.workspaces.len(), 1);
         assert_eq!(config.schedules.len(), 1);
         assert_eq!(config.filter.exclude_tags, vec!["anime", "cartoon"]);

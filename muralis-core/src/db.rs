@@ -207,9 +207,7 @@ impl Database {
         let mut entries = Vec::new();
         for row in rows {
             let (source_id, source_str, blacklisted_at) = row?;
-            let source: SourceType = source_str
-                .parse()
-                .map_err(|e: String| rusqlite::Error::InvalidParameterName(e))?;
+            let source = SourceType::new(source_str);
             entries.push(BlacklistEntry {
                 source_id,
                 source,
@@ -237,10 +235,7 @@ struct WallpaperRow {
 }
 
 fn row_to_wallpaper(row: WallpaperRow) -> Result<Wallpaper> {
-    let source_type: SourceType = row
-        .source_type
-        .parse()
-        .map_err(|e: String| MuralisError::Database(rusqlite::Error::InvalidParameterName(e)))?;
+    let source_type = SourceType::new(row.source_type);
     let tags: Vec<String> = serde_json::from_str(&row.tags)?;
     Ok(Wallpaper {
         id: row.id,
@@ -265,7 +260,7 @@ mod tests {
     fn test_wallpaper(id: &str) -> Wallpaper {
         Wallpaper {
             id: id.to_string(),
-            source_type: SourceType::Wallhaven,
+            source_type: SourceType::new("wallhaven"),
             source_id: "wh_123".into(),
             source_url: Some("https://wallhaven.cc/w/123".into()),
             width: 1920,
@@ -286,7 +281,7 @@ mod tests {
 
         let loaded = db.get_wallpaper("abc123").unwrap();
         assert_eq!(loaded.id, "abc123");
-        assert_eq!(loaded.source_type, SourceType::Wallhaven);
+        assert_eq!(loaded.source_type, SourceType::new("wallhaven"));
         assert_eq!(loaded.tags, vec!["nature", "landscape"]);
         assert_eq!(loaded.width, 1920);
     }
@@ -337,7 +332,7 @@ mod tests {
     #[test]
     fn test_blacklist_crud() {
         let db = Database::open_in_memory().unwrap();
-        let source = SourceType::Wallhaven;
+        let source = SourceType::new("wallhaven");
 
         assert!(!db.is_blacklisted("wh_bad", &source).unwrap());
 

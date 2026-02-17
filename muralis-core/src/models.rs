@@ -1,39 +1,30 @@
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum SourceType {
-    Wallhaven,
-    Unsplash,
-    Pexels,
-    Feed,
-    Local,
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(transparent)]
+pub struct SourceType(String);
+
+impl SourceType {
+    pub fn new(name: impl Into<String>) -> Self {
+        Self(name.into())
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
 }
 
 impl std::fmt::Display for SourceType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Wallhaven => write!(f, "wallhaven"),
-            Self::Unsplash => write!(f, "unsplash"),
-            Self::Pexels => write!(f, "pexels"),
-            Self::Feed => write!(f, "feed"),
-            Self::Local => write!(f, "local"),
-        }
+        f.write_str(&self.0)
     }
 }
 
 impl std::str::FromStr for SourceType {
-    type Err = String;
+    type Err = std::convert::Infallible;
 
     fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
-        match s {
-            "wallhaven" => Ok(Self::Wallhaven),
-            "unsplash" => Ok(Self::Unsplash),
-            "pexels" => Ok(Self::Pexels),
-            "feed" => Ok(Self::Feed),
-            "local" => Ok(Self::Local),
-            other => Err(format!("unknown source type: {other}")),
-        }
+        Ok(Self(s.to_string()))
     }
 }
 

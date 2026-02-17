@@ -6,6 +6,10 @@ license.workspace = true
 
 [dependencies]
 muralis-core = { path = "../muralis-core" }
+muralis-source-wallhaven = { path = "../muralis-source-wallhaven" }
+muralis-source-unsplash = { path = "../muralis-source-unsplash" }
+muralis-source-pexels = { path = "../muralis-source-pexels" }
+muralis-source-feed = { path = "../muralis-source-feed" }
 tokio = { workspace = true }
 anyhow = { workspace = true }
 tracing = { workspace = true }
@@ -13,3 +17,4 @@ tracing-subscriber = { workspace = true }
 iced = { workspace = true }
 serde_json = { workspace = true }
 reqwest = { workspace = true }
+toml = { workspace = true }

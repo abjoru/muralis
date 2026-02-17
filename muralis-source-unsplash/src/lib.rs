@@ -1,11 +1,32 @@
 use async_trait::async_trait;
 use serde::Deserialize;
 
-use crate::error::Result;
-use crate::models::{SourceType, WallpaperPreview};
-use crate::sources::{AspectRatioFilter, WallpaperSource};
+use muralis_core::error::Result;
+use muralis_core::models::{SourceType, WallpaperPreview};
+use muralis_core::sources::{AspectRatioFilter, WallpaperSource};
 
 const API_BASE: &str = "https://api.unsplash.com";
+
+#[derive(Debug, Default, Clone, Deserialize)]
+#[serde(default)]
+pub struct UnsplashConfig {
+    pub enabled: bool,
+    pub access_key: Option<String>,
+}
+
+pub fn create_sources(table: &toml::Table) -> Vec<Box<dyn WallpaperSource>> {
+    let Some(val) = table.get("unsplash") else {
+        return Vec::new();
+    };
+    let config: UnsplashConfig = val.clone().try_into().unwrap_or_default();
+    if !config.enabled {
+        return Vec::new();
+    }
+    let Some(key) = config.access_key else {
+        return Vec::new();
+    };
+    vec![Box::new(UnsplashClient::new(key))]
+}
 
 pub struct UnsplashClient {
     access_key: String,
@@ -23,6 +44,14 @@ impl UnsplashClient {
 
 #[async_trait]
 impl WallpaperSource for UnsplashClient {
+    fn name(&self) -> &str {
+        "Unsplash"
+    }
+
+    fn source_type(&self) -> &str {
+        "unsplash"
+    }
+
     async fn search(
         &self,
         query: &str,
@@ -48,7 +77,7 @@ impl WallpaperSource for UnsplashClient {
             .results
             .into_iter()
             .map(|p| WallpaperPreview {
-                source_type: SourceType::Unsplash,
+                source_type: SourceType::new("unsplash"),
                 source_id: p.id.clone(),
                 source_url: p.links.html,
                 thumbnail_url: p.urls.small,
@@ -70,10 +99,6 @@ impl WallpaperSource for UnsplashClient {
             .bytes()
             .await?;
         Ok(bytes)
-    }
-
-    fn name(&self) -> &str {
-        "unsplash"
     }
 }
 
@@ -161,7 +186,7 @@ mod tests {
             .results
             .into_iter()
             .map(|p| WallpaperPreview {
-                source_type: SourceType::Unsplash,
+                source_type: SourceType::new("unsplash"),
                 source_id: p.id.clone(),
                 source_url: p.links.html,
                 thumbnail_url: p.urls.small,

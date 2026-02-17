@@ -20,17 +20,39 @@ cargo run -p muralis-gui             # run GUI
 
 ## Architecture
 
-Cargo workspace with 4 crates:
+Cargo workspace with 8 crates:
 
-- **muralis-core** — Shared library. Traits, models, config, DB, IPC, cache, paths.
+- **muralis-core** — Shared library. Traits (`WallpaperSource`, `WallpaperBackend`), models, config, DB, IPC, cache, paths, `SourceRegistry`.
 - **muralis-cli** — CLI binary (clap). Sends IPC requests to daemon.
 - **muralis-daemon** — Background service. Runs display engine, IPC server, system tray, workspace listener as tokio tasks communicating via mpsc channels.
-- **muralis-gui** — Iced (Elm architecture) GUI. Tabs for favorites + each wallpaper source.
+- **muralis-gui** — Iced (Elm architecture) GUI. Dynamic tabs built from `SourceRegistry`.
+- **muralis-source-wallhaven** — Wallhaven API source plugin.
+- **muralis-source-unsplash** — Unsplash API source plugin.
+- **muralis-source-pexels** — Pexels API source plugin.
+- **muralis-source-feed** — RSS/Atom feed source plugin (one instance per configured feed).
 
-### Key Traits
+### Plugin Architecture
 
+Sources are independent crates implementing `WallpaperSource` trait. Each exports:
+```rust
+pub fn create_sources(table: &toml::Table) -> Vec<Box<dyn WallpaperSource>>
+```
+The GUI builds a `SourceRegistry` at startup by calling each crate's `create_sources()`. Tabs and search are fully dynamic — no hardcoded source names in the GUI.
+
+**Adding a new source:**
+1. Create `muralis-source-foo/` with `WallpaperSource` impl
+2. Add to workspace members in root `Cargo.toml`
+3. Add dep in `muralis-gui/Cargo.toml`
+4. Add 1 line in `build_registry()` in `muralis-gui/src/app.rs`
+5. Add `[sources.foo]` section to user's config.toml
+
+### Key Types
+
+- `SourceType` (models.rs) — String newtype for source identification. Stored as TEXT in SQLite.
+- `WallpaperSource` (sources/mod.rs) — Trait with `name()` (display), `source_type()` (DB key), `search()`, `download()`.
+- `SourceRegistry` (sources/mod.rs) — Holds `Vec<Box<dyn WallpaperSource>>`, lookup by name.
 - `WallpaperBackend` (backend/mod.rs) — Wallpaper setters: `HyprpaperBackend`, `SwwwBackend`. Factory: `create_backend()`.
-- `WallpaperSource` (sources/mod.rs) — Async API clients: `WallhavenClient`, `UnsplashClient`, `PexelsClient`, `FeedClient`. Factory: `create_sources()`.
+- `Config.sources` — `toml::Table` (raw TOML). Each source crate deserializes its own section.
 
 ### Daemon Task Model
 

@@ -2909,12 +2909,10 @@ dependencies = [
  "bytes",
  "chrono",
  "dirs",
- "feed-rs",
  "image",
  "libc",
  "reqwest",
  "rusqlite",
- "scraper",
  "serde",
  "serde_json",
  "sha2",
@@ -2923,7 +2921,6 @@ dependencies = [
  "tokio",
  "toml",
  "tracing",
- "url",
 ]
 
 [[package]]
@@ -2950,11 +2947,71 @@ dependencies = [
  "anyhow",
  "iced",
  "muralis-core",
+ "muralis-source-feed",
+ "muralis-source-pexels",
+ "muralis-source-unsplash",
+ "muralis-source-wallhaven",
  "reqwest",
  "serde_json",
  "tokio",
+ "toml",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "muralis-source-feed"
+version = "0.1.5"
+dependencies = [
+ "async-trait",
+ "bytes",
+ "feed-rs",
+ "muralis-core",
+ "reqwest",
+ "scraper",
+ "serde",
+ "serde_json",
+ "toml",
+ "tracing",
+]
+
+[[package]]
+name = "muralis-source-pexels"
+version = "0.1.5"
+dependencies = [
+ "async-trait",
+ "bytes",
+ "muralis-core",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "toml",
+]
+
+[[package]]
+name = "muralis-source-unsplash"
+version = "0.1.5"
+dependencies = [
+ "async-trait",
+ "bytes",
+ "muralis-core",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "toml",
+]
+
+[[package]]
+name = "muralis-source-wallhaven"
+version = "0.1.5"
+dependencies = [
+ "async-trait",
+ "bytes",
+ "muralis-core",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "toml",
 ]
 
 [[package]]

@@ -145,7 +145,7 @@ impl WallpaperManager {
         let now = chrono::Utc::now().to_rfc3339();
         let wp = Wallpaper {
             id: hash.clone(),
-            source_type: SourceType::Local,
+            source_type: SourceType::new("local"),
             source_id: path.to_string_lossy().to_string(),
             source_url: None,
             width: img.width(),
@@ -243,7 +243,7 @@ mod tests {
             .unwrap();
 
         let preview = WallpaperPreview {
-            source_type: SourceType::Wallhaven,
+            source_type: SourceType::new("wallhaven"),
             source_id: "test_001".into(),
             source_url: "https://example.com".into(),
             thumbnail_url: "https://example.com/thumb.jpg".into(),

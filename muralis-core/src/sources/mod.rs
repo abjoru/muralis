@@ -1,13 +1,7 @@
-pub mod feed;
-pub mod pexels;
-pub mod unsplash;
-pub mod wallhaven;
-
 use std::fmt;
 
 use async_trait::async_trait;
 
-use crate::config::SourcesConfig;
 use crate::error::Result;
 use crate::models::WallpaperPreview;
 
@@ -104,6 +98,10 @@ impl fmt::Display for AspectRatioFilter {
 
 #[async_trait]
 pub trait WallpaperSource: Send + Sync {
+    /// Display name / tab label (e.g. "Wallhaven", "Bing Daily")
+    fn name(&self) -> &str;
+    /// DB type string (e.g. "wallhaven", "feed")
+    fn source_type(&self) -> &str;
     async fn search(
         &self,
         query: &str,
@@ -111,30 +109,41 @@ pub trait WallpaperSource: Send + Sync {
         aspect: AspectRatioFilter,
     ) -> Result<Vec<WallpaperPreview>>;
     async fn download(&self, preview: &WallpaperPreview) -> Result<bytes::Bytes>;
-    fn name(&self) -> &str;
 }
 
-/// Create all enabled source clients from config.
-pub fn create_sources(config: &SourcesConfig) -> Vec<Box<dyn WallpaperSource>> {
-    let mut sources: Vec<Box<dyn WallpaperSource>> = Vec::new();
+pub struct SourceRegistry {
+    sources: Vec<Box<dyn WallpaperSource>>,
+}
 
-    if config.wallhaven.enabled {
-        sources.push(Box::new(wallhaven::WallhavenClient::new(
-            config.wallhaven.clone(),
-        )));
-    }
-
-    if config.unsplash.enabled {
-        if let Some(ref key) = config.unsplash.access_key {
-            sources.push(Box::new(unsplash::UnsplashClient::new(key.clone())));
+impl SourceRegistry {
+    pub fn new() -> Self {
+        Self {
+            sources: Vec::new(),
         }
     }
 
-    if config.pexels.enabled {
-        if let Some(ref key) = config.pexels.api_key {
-            sources.push(Box::new(pexels::PexelsClient::new(key.clone())));
-        }
+    pub fn register(&mut self, source: Box<dyn WallpaperSource>) {
+        self.sources.push(source);
     }
 
-    sources
+    pub fn names(&self) -> Vec<&str> {
+        self.sources.iter().map(|s| s.name()).collect()
+    }
+
+    pub fn get(&self, name: &str) -> Option<&dyn WallpaperSource> {
+        self.sources
+            .iter()
+            .find(|s| s.name() == name)
+            .map(|s| s.as_ref())
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = &dyn WallpaperSource> {
+        self.sources.iter().map(|s| s.as_ref())
+    }
+}
+
+impl Default for SourceRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
 }

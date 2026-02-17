@@ -5,30 +5,7 @@ pub use muralis_core::sources::AspectRatioFilter;
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Tab {
     Favorites,
-    Wallhaven,
-    Unsplash,
-    Pexels,
-    Feeds,
-}
-
-impl Tab {
-    pub fn label(&self) -> &str {
-        match self {
-            Self::Favorites => "Favorites",
-            Self::Wallhaven => "Wallhaven",
-            Self::Unsplash => "Unsplash",
-            Self::Pexels => "Pexels",
-            Self::Feeds => "Feeds",
-        }
-    }
-
-    pub const ALL: &[Tab] = &[
-        Tab::Favorites,
-        Tab::Wallhaven,
-        Tab::Unsplash,
-        Tab::Pexels,
-        Tab::Feeds,
-    ];
+    Source(String),
 }
 
 #[derive(Debug, Clone)]

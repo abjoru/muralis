@@ -1,12 +1,42 @@
 use async_trait::async_trait;
 use serde::Deserialize;
 
-use crate::config::WallhavenConfig;
-use crate::error::Result;
-use crate::models::{SourceType, WallpaperPreview};
-use crate::sources::{AspectRatioFilter, WallpaperSource};
+use muralis_core::error::Result;
+use muralis_core::models::{SourceType, WallpaperPreview};
+use muralis_core::sources::{AspectRatioFilter, WallpaperSource};
 
 const API_BASE: &str = "https://wallhaven.cc/api/v1";
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct WallhavenConfig {
+    pub enabled: bool,
+    pub api_key: Option<String>,
+    pub categories: String,
+    pub purity: String,
+}
+
+impl Default for WallhavenConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            api_key: None,
+            categories: "100".into(),
+            purity: "100".into(),
+        }
+    }
+}
+
+pub fn create_sources(table: &toml::Table) -> Vec<Box<dyn WallpaperSource>> {
+    let Some(val) = table.get("wallhaven") else {
+        return Vec::new();
+    };
+    let config: WallhavenConfig = val.clone().try_into().unwrap_or_default();
+    if !config.enabled {
+        return Vec::new();
+    }
+    vec![Box::new(WallhavenClient::new(config))]
+}
 
 pub struct WallhavenClient {
     config: WallhavenConfig,
@@ -24,6 +54,14 @@ impl WallhavenClient {
 
 #[async_trait]
 impl WallpaperSource for WallhavenClient {
+    fn name(&self) -> &str {
+        "Wallhaven"
+    }
+
+    fn source_type(&self) -> &str {
+        "wallhaven"
+    }
+
     async fn search(
         &self,
         query: &str,
@@ -50,7 +88,7 @@ impl WallpaperSource for WallhavenClient {
             .data
             .into_iter()
             .map(|w| WallpaperPreview {
-                source_type: SourceType::Wallhaven,
+                source_type: SourceType::new("wallhaven"),
                 source_id: w.id.clone(),
                 source_url: w.url,
                 thumbnail_url: w.thumbs.small,
@@ -72,10 +110,6 @@ impl WallpaperSource for WallhavenClient {
             .bytes()
             .await?;
         Ok(bytes)
-    }
-
-    fn name(&self) -> &str {
-        "wallhaven"
     }
 }
 
@@ -170,7 +204,7 @@ mod tests {
             .data
             .into_iter()
             .map(|w| WallpaperPreview {
-                source_type: SourceType::Wallhaven,
+                source_type: SourceType::new("wallhaven"),
                 source_id: w.id.clone(),
                 source_url: w.url,
                 thumbnail_url: w.thumbs.small,

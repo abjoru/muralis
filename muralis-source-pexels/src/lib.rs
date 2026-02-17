@@ -1,11 +1,32 @@
 use async_trait::async_trait;
 use serde::Deserialize;
 
-use crate::error::Result;
-use crate::models::{SourceType, WallpaperPreview};
-use crate::sources::{AspectRatioFilter, WallpaperSource};
+use muralis_core::error::Result;
+use muralis_core::models::{SourceType, WallpaperPreview};
+use muralis_core::sources::{AspectRatioFilter, WallpaperSource};
 
 const API_BASE: &str = "https://api.pexels.com/v1";
+
+#[derive(Debug, Default, Clone, Deserialize)]
+#[serde(default)]
+pub struct PexelsConfig {
+    pub enabled: bool,
+    pub api_key: Option<String>,
+}
+
+pub fn create_sources(table: &toml::Table) -> Vec<Box<dyn WallpaperSource>> {
+    let Some(val) = table.get("pexels") else {
+        return Vec::new();
+    };
+    let config: PexelsConfig = val.clone().try_into().unwrap_or_default();
+    if !config.enabled {
+        return Vec::new();
+    }
+    let Some(key) = config.api_key else {
+        return Vec::new();
+    };
+    vec![Box::new(PexelsClient::new(key))]
+}
 
 pub struct PexelsClient {
     api_key: String,
@@ -23,6 +44,14 @@ impl PexelsClient {
 
 #[async_trait]
 impl WallpaperSource for PexelsClient {
+    fn name(&self) -> &str {
+        "Pexels"
+    }
+
+    fn source_type(&self) -> &str {
+        "pexels"
+    }
+
     async fn search(
         &self,
         query: &str,
@@ -50,14 +79,14 @@ impl WallpaperSource for PexelsClient {
             .map(|p| {
                 let full_url = p.src.original.clone();
                 WallpaperPreview {
-                    source_type: SourceType::Pexels,
+                    source_type: SourceType::new("pexels"),
                     source_id: p.id.to_string(),
                     source_url: p.url,
                     thumbnail_url: p.src.small,
                     full_url,
                     width: p.width,
                     height: p.height,
-                    tags: Vec::new(), // Pexels doesn't return tags in search
+                    tags: Vec::new(),
                 }
             })
             .collect();
@@ -73,10 +102,6 @@ impl WallpaperSource for PexelsClient {
             .bytes()
             .await?;
         Ok(bytes)
-    }
-
-    fn name(&self) -> &str {
-        "pexels"
     }
 }
 
@@ -152,7 +177,7 @@ mod tests {
             .photos
             .into_iter()
             .map(|p| WallpaperPreview {
-                source_type: SourceType::Pexels,
+                source_type: SourceType::new("pexels"),
                 source_id: p.id.to_string(),
                 source_url: p.url,
                 thumbnail_url: p.src.small,

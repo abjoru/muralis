@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 use std::time::Duration;
 
 use iced::widget::image::Handle as ImageHandle;
@@ -11,7 +12,7 @@ use muralis_core::db::Database;
 use muralis_core::ipc::{self, DaemonStatus, IpcRequest};
 use muralis_core::models::{Wallpaper, WallpaperPreview};
 use muralis_core::paths::MuralisPaths;
-use muralis_core::sources;
+use muralis_core::sources::SourceRegistry;
 use muralis_core::wallpapers::WallpaperManager;
 
 use crate::message::{AspectRatioFilter, Message, Tab};
@@ -24,16 +25,32 @@ fn http_client() -> reqwest::Client {
         .unwrap_or_default()
 }
 
+fn build_registry(sources: &toml::Table) -> SourceRegistry {
+    let mut registry = SourceRegistry::new();
+    for s in muralis_source_wallhaven::create_sources(sources) {
+        registry.register(s);
+    }
+    for s in muralis_source_unsplash::create_sources(sources) {
+        registry.register(s);
+    }
+    for s in muralis_source_pexels::create_sources(sources) {
+        registry.register(s);
+    }
+    for s in muralis_source_feed::create_sources(sources) {
+        registry.register(s);
+    }
+    registry
+}
+
 pub struct App {
     active_tab: Tab,
     search_query: String,
     current_page: u32,
     loading: bool,
     favorites: Vec<Wallpaper>,
-    wallhaven_results: Vec<WallpaperPreview>,
-    unsplash_results: Vec<WallpaperPreview>,
-    pexels_results: Vec<WallpaperPreview>,
-    feed_results: Vec<WallpaperPreview>,
+    source_names: Vec<String>,
+    source_results: HashMap<String, Vec<WallpaperPreview>>,
+    registry: Arc<SourceRegistry>,
     thumbnail_cache: HashMap<String, ImageHandle>,
     selected_index: Option<usize>,
     multi_selected: HashSet<usize>,
@@ -59,16 +76,19 @@ impl App {
         let _ = paths.install_icon();
         let config = Config::load_or_default(&paths);
 
+        let registry = build_registry(&config.sources);
+        let source_names: Vec<String> = registry.names().into_iter().map(String::from).collect();
+        let registry = Arc::new(registry);
+
         let app = Self {
             active_tab: Tab::Favorites,
             search_query: String::new(),
             current_page: 1,
             loading: false,
             favorites: Vec::new(),
-            wallhaven_results: Vec::new(),
-            unsplash_results: Vec::new(),
-            pexels_results: Vec::new(),
-            feed_results: Vec::new(),
+            source_names,
+            source_results: HashMap::new(),
+            registry,
             thumbnail_cache: HashMap::new(),
             selected_index: None,
             multi_selected: HashSet::new(),
@@ -152,19 +172,22 @@ impl App {
             }
 
             Message::SearchSubmit => {
+                let Tab::Source(ref name) = self.active_tab else {
+                    return Task::none();
+                };
                 self.loading = true;
                 self.error_message = None;
                 let query = self.search_query.clone();
                 let page = self.current_page;
                 let tab = self.active_tab.clone();
-                let tab2 = tab.clone();
-                let config = self.config.sources.clone();
+                let name = name.clone();
                 let aspect = self.aspect_ratio_filter;
+                let registry = Arc::clone(&self.registry);
 
                 Task::perform(
-                    async move { search_source(&tab, &config, &query, page, aspect).await },
+                    async move { search_source(&registry, &name, &query, page, aspect).await },
                     move |result| match result {
-                        Ok(results) => Message::SearchResults(tab2.clone(), results),
+                        Ok(results) => Message::SearchResults(tab.clone(), results),
                         Err(e) => Message::SearchError(e.to_string()),
                     },
                 )
@@ -195,12 +218,8 @@ impl App {
                     })
                     .collect();
 
-                match tab {
-                    Tab::Wallhaven => self.wallhaven_results = results,
-                    Tab::Unsplash => self.unsplash_results = results,
-                    Tab::Pexels => self.pexels_results = results,
-                    Tab::Feeds => self.feed_results = results,
-                    _ => {}
+                if let Tab::Source(name) = tab {
+                    self.source_results.insert(name, results);
                 }
                 self.selected_index = None;
                 self.preview_handle = None;
@@ -244,10 +263,11 @@ impl App {
 
                 let url = match &self.active_tab {
                     Tab::Favorites => self.favorites.get(idx).map(|wp| wp.file_path.clone()),
-                    Tab::Wallhaven => self.wallhaven_results.get(idx).map(|p| p.full_url.clone()),
-                    Tab::Unsplash => self.unsplash_results.get(idx).map(|p| p.full_url.clone()),
-                    Tab::Pexels => self.pexels_results.get(idx).map(|p| p.full_url.clone()),
-                    Tab::Feeds => self.feed_results.get(idx).map(|p| p.full_url.clone()),
+                    Tab::Source(name) => self
+                        .source_results
+                        .get(name)
+                        .and_then(|r| r.get(idx))
+                        .map(|p| p.full_url.clone()),
                 };
 
                 if let Some(url) = url {
@@ -739,24 +759,10 @@ impl App {
                     .get(idx)
                     .map(|wp| (wp.width, wp.height))
                     .unwrap_or((0, 0)),
-                Tab::Wallhaven => self
-                    .wallhaven_results
-                    .get(idx)
-                    .map(|p| (p.width, p.height))
-                    .unwrap_or((0, 0)),
-                Tab::Unsplash => self
-                    .unsplash_results
-                    .get(idx)
-                    .map(|p| (p.width, p.height))
-                    .unwrap_or((0, 0)),
-                Tab::Pexels => self
-                    .pexels_results
-                    .get(idx)
-                    .map(|p| (p.width, p.height))
-                    .unwrap_or((0, 0)),
-                Tab::Feeds => self
-                    .feed_results
-                    .get(idx)
+                Tab::Source(name) => self
+                    .source_results
+                    .get(name)
+                    .and_then(|r| r.get(idx))
                     .map(|p| (p.width, p.height))
                     .unwrap_or((0, 0)),
             }
@@ -767,10 +773,11 @@ impl App {
 
     fn active_source_results(&self) -> &[WallpaperPreview] {
         match &self.active_tab {
-            Tab::Wallhaven => &self.wallhaven_results,
-            Tab::Unsplash => &self.unsplash_results,
-            Tab::Pexels => &self.pexels_results,
-            Tab::Feeds => &self.feed_results,
+            Tab::Source(name) => self
+                .source_results
+                .get(name)
+                .map(|v| v.as_slice())
+                .unwrap_or(&[]),
             _ => &[],
         }
     }
@@ -803,15 +810,30 @@ impl App {
         .spacing(8)
         .align_y(iced::Alignment::Center);
 
-        for tab in Tab::ALL {
-            let style = if *tab == self.active_tab {
+        // Favorites tab
+        let fav_style = if self.active_tab == Tab::Favorites {
+            button::primary
+        } else {
+            button::text
+        };
+        tab_row = tab_row.push(
+            button(text("Favorites"))
+                .on_press(Message::TabSelected(Tab::Favorites))
+                .style(fav_style)
+                .padding([8, 20]),
+        );
+
+        // Dynamic source tabs
+        for name in &self.source_names {
+            let tab = Tab::Source(name.clone());
+            let style = if self.active_tab == tab {
                 button::primary
             } else {
                 button::text
             };
             tab_row = tab_row.push(
-                button(text(tab.label()))
-                    .on_press(Message::TabSelected(tab.clone()))
+                button(text(name.as_str()))
+                    .on_press(Message::TabSelected(tab))
                     .style(style)
                     .padding([8, 20]),
             );
@@ -851,14 +873,12 @@ impl App {
                     );
                     (view, preview)
                 }
-                tab => {
-                    let results = match tab {
-                        Tab::Wallhaven => &self.wallhaven_results,
-                        Tab::Unsplash => &self.unsplash_results,
-                        Tab::Pexels => &self.pexels_results,
-                        Tab::Feeds => &self.feed_results,
-                        _ => unreachable!(),
-                    };
+                Tab::Source(name) => {
+                    let results = self
+                        .source_results
+                        .get(name)
+                        .map(|v| v.as_slice())
+                        .unwrap_or(&[]);
                     let view = views::source_tab::view(
                         &self.search_query,
                         results,
@@ -926,44 +946,19 @@ async fn load_favorites() -> anyhow::Result<Vec<Wallpaper>> {
 }
 
 async fn search_source(
-    tab: &Tab,
-    config: &muralis_core::config::SourcesConfig,
+    registry: &SourceRegistry,
+    name: &str,
     query: &str,
     page: u32,
     aspect: AspectRatioFilter,
 ) -> anyhow::Result<Vec<WallpaperPreview>> {
-    if matches!(tab, Tab::Feeds) {
-        let client = muralis_core::sources::feed::FeedClient::new();
-        let mut all = Vec::new();
-        for feed_cfg in &config.feeds {
-            if feed_cfg.enabled {
-                match client.fetch_feed(feed_cfg).await {
-                    Ok(mut results) => all.append(&mut results),
-                    Err(e) => tracing::warn!("feed '{}' failed: {e}", feed_cfg.name),
-                }
-            }
-        }
-        return Ok(all);
-    }
-
-    let sources = sources::create_sources(config);
-    let source_name = match tab {
-        Tab::Wallhaven => "wallhaven",
-        Tab::Unsplash => "unsplash",
-        Tab::Pexels => "pexels",
-        _ => return Ok(Vec::new()),
-    };
-
-    for source in &sources {
-        if source.name() == source_name {
-            return source
-                .search(query, page, aspect)
-                .await
-                .map_err(|e| e.into());
-        }
-    }
-
-    anyhow::bail!("source {source_name} not configured")
+    let source = registry
+        .get(name)
+        .ok_or_else(|| anyhow::anyhow!("source {name} not configured"))?;
+    source
+        .search(query, page, aspect)
+        .await
+        .map_err(|e| e.into())
 }
 
 async fn save_config(config: Config, paths: MuralisPaths) -> Result<(), String> {

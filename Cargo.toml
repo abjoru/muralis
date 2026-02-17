@@ -4,6 +4,10 @@ members = [
     "muralis-daemon",
     "muralis-cli",
     "muralis-gui",
+    "muralis-source-wallhaven",
+    "muralis-source-unsplash",
+    "muralis-source-pexels",
+    "muralis-source-feed",
 ]
 resolver = "2"
 

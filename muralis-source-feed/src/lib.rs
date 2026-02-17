@@ -1,33 +1,85 @@
+use async_trait::async_trait;
 use scraper::{Html, Selector};
+use serde::Deserialize;
 
-use crate::config::FeedConfig;
-use crate::error::Result;
-use crate::models::{SourceType, WallpaperPreview};
+use muralis_core::error::Result;
+use muralis_core::models::{SourceType, WallpaperPreview};
+use muralis_core::sources::{AspectRatioFilter, WallpaperSource};
 
-pub struct FeedClient {
+#[derive(Debug, Clone, Deserialize)]
+pub struct FeedConfig {
+    pub name: String,
+    pub url: String,
+    #[serde(default)]
+    pub enabled: bool,
+}
+
+pub fn create_sources(table: &toml::Table) -> Vec<Box<dyn WallpaperSource>> {
+    let Some(val) = table.get("feeds") else {
+        return Vec::new();
+    };
+    let Some(arr) = val.as_array() else {
+        return Vec::new();
+    };
+    let mut sources: Vec<Box<dyn WallpaperSource>> = Vec::new();
+    for item in arr {
+        let config: FeedConfig = match item.clone().try_into() {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::warn!("failed to parse feed config: {e}");
+                continue;
+            }
+        };
+        if config.enabled {
+            sources.push(Box::new(FeedSource::new(config)));
+        }
+    }
+    sources
+}
+
+pub struct FeedSource {
+    config: FeedConfig,
     client: reqwest::Client,
 }
 
-impl Default for FeedClient {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl FeedClient {
-    pub fn new() -> Self {
+impl FeedSource {
+    pub fn new(config: FeedConfig) -> Self {
         Self {
+            config,
             client: reqwest::Client::builder()
                 .user_agent("muralis/0.1")
                 .build()
                 .unwrap_or_default(),
         }
     }
+}
 
-    pub async fn fetch_feed(&self, config: &FeedConfig) -> Result<Vec<WallpaperPreview>> {
-        let body = self.client.get(&config.url).send().await?.bytes().await?;
-        let feed = feed_rs::parser::parse(&body[..])
-            .map_err(|e| crate::error::MuralisError::Config(format!("feed parse error: {e}")))?;
+#[async_trait]
+impl WallpaperSource for FeedSource {
+    fn name(&self) -> &str {
+        &self.config.name
+    }
+
+    fn source_type(&self) -> &str {
+        "feed"
+    }
+
+    async fn search(
+        &self,
+        _query: &str,
+        _page: u32,
+        _aspect: AspectRatioFilter,
+    ) -> Result<Vec<WallpaperPreview>> {
+        let body = self
+            .client
+            .get(&self.config.url)
+            .send()
+            .await?
+            .bytes()
+            .await?;
+        let feed = feed_rs::parser::parse(&body[..]).map_err(|e| {
+            muralis_core::error::MuralisError::Config(format!("feed parse error: {e}"))
+        })?;
 
         let mut previews = Vec::new();
 
@@ -41,7 +93,7 @@ impl FeedClient {
                     .unwrap_or_default();
 
                 previews.push(WallpaperPreview {
-                    source_type: SourceType::Feed,
+                    source_type: SourceType::new("feed"),
                     source_id: id,
                     source_url: entry
                         .links
@@ -52,7 +104,7 @@ impl FeedClient {
                     full_url: image_url,
                     width: 0,
                     height: 0,
-                    tags: vec![title, config.name.clone()],
+                    tags: vec![title, self.config.name.clone()],
                 });
             }
         }
@@ -60,8 +112,14 @@ impl FeedClient {
         Ok(previews)
     }
 
-    pub async fn download_image(&self, url: &str) -> Result<bytes::Bytes> {
-        let bytes = self.client.get(url).send().await?.bytes().await?;
+    async fn download(&self, preview: &WallpaperPreview) -> Result<bytes::Bytes> {
+        let bytes = self
+            .client
+            .get(&preview.full_url)
+            .send()
+            .await?
+            .bytes()
+            .await?;
         Ok(bytes)
     }
 }
