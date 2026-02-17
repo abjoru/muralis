@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
 use iced::widget::image::Handle as ImageHandle;
-use iced::widget::{button, column, container, row, text};
+use iced::widget::{button, column, container, row, text, Svg};
 use iced::{Element, Length, Task, Theme};
 
 use muralis_core::config::Config;
@@ -55,6 +55,7 @@ impl App {
     pub fn new() -> (Self, Task<Message>) {
         let paths = MuralisPaths::new().expect("failed to resolve XDG paths");
         paths.ensure_dirs().expect("failed to create directories");
+        let _ = paths.install_icon();
         let config = Config::load_or_default(&paths);
 
         let app = Self {
@@ -661,26 +662,37 @@ impl App {
     }
 
     pub fn view(&self) -> Element<'_, Message> {
-        let tabs = container(
-            row(Tab::ALL
-                .iter()
-                .map(|tab| {
-                    let style = if *tab == self.active_tab {
-                        button::primary
-                    } else {
-                        button::text
-                    };
-                    button(text(tab.label()))
-                        .on_press(Message::TabSelected(tab.clone()))
-                        .style(style)
-                        .padding([8, 20])
-                        .into()
-                })
-                .collect::<Vec<Element<Message>>>())
-            .spacing(8)
-            .padding([8, 8]),
-        )
-        .width(Length::Fill);
+        let logo = Svg::new(iced::widget::svg::Handle::from_memory(
+            include_bytes!("../../assets/muralis.svg").as_slice(),
+        ))
+        .width(28)
+        .height(28);
+
+        let mut tab_row = row![
+            logo,
+            text("Muralis")
+                .size(16)
+                .color(iced::Color::from_rgb8(0xa8, 0x99, 0x84)),
+            text("|").color(iced::Color::from_rgb8(0x66, 0x5c, 0x54)),
+        ]
+        .spacing(8)
+        .align_y(iced::Alignment::Center);
+
+        for tab in Tab::ALL {
+            let style = if *tab == self.active_tab {
+                button::primary
+            } else {
+                button::text
+            };
+            tab_row = tab_row.push(
+                button(text(tab.label()))
+                    .on_press(Message::TabSelected(tab.clone()))
+                    .style(style)
+                    .padding([8, 20]),
+            );
+        }
+
+        let tabs = container(tab_row.padding([8, 8])).width(Length::Fill);
 
         let (img_w, img_h) = self.selected_image_dimensions();
         let (mon_w, mon_h) = self.monitor_dims;
@@ -699,7 +711,6 @@ impl App {
                     self.crop_overlay_active,
                     &self.crop_overlay_handle,
                     crop_needed,
-                    self.aspect_ratio_filter,
                 );
                 let preview = views::favorites::preview_content(
                     &self.favorites,

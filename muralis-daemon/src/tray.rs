@@ -16,7 +16,7 @@ impl ksni::Tray for MuralisTray {
     }
 
     fn icon_name(&self) -> String {
-        "preferences-desktop-wallpaper".into()
+        "muralis".into()
     }
 
     fn title(&self) -> String {

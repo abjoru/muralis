@@ -23,6 +23,7 @@ async fn main() -> anyhow::Result<()> {
 
     let paths = MuralisPaths::new()?;
     paths.ensure_dirs()?;
+    let _ = paths.install_icon();
 
     let config = Config::load_or_default(&paths);
     info!(backend = %config.general.backend, mode = %config.display.mode, "starting muralis-daemon");

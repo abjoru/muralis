@@ -68,4 +68,25 @@ impl MuralisPaths {
         }
         Ok(())
     }
+
+    /// Install app icon to XDG icon dir if missing/outdated.
+    pub fn install_icon(&self) -> Result<()> {
+        let icon_dir = self
+            .data_dir
+            .parent()
+            .unwrap_or(&self.data_dir)
+            .join("icons/hicolor/scalable/apps");
+        std::fs::create_dir_all(&icon_dir)?;
+        let dest = icon_dir.join("muralis.svg");
+        let svg = include_bytes!("../../assets/muralis.svg");
+        if dest.exists() {
+            if let Ok(existing) = std::fs::read(&dest) {
+                if existing == svg.as_slice() {
+                    return Ok(());
+                }
+            }
+        }
+        std::fs::write(&dest, svg)?;
+        Ok(())
+    }
 }

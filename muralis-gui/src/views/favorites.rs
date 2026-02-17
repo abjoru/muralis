@@ -1,12 +1,12 @@
 use std::collections::{HashMap, HashSet};
 
 use iced::widget::image::Handle as ImageHandle;
-use iced::widget::{button, column, container, pick_list, row, scrollable, text, Image, Space};
+use iced::widget::{button, column, container, row, scrollable, text, Image, Space};
 use iced::{Element, Length};
 
 use muralis_core::models::Wallpaper;
 
-use crate::message::{AspectRatioFilter, Message};
+use crate::message::Message;
 
 pub fn view<'a>(
     wallpapers: &'a [Wallpaper],
@@ -18,36 +18,16 @@ pub fn view<'a>(
     _crop_overlay_active: bool,
     _crop_overlay_handle: &'a Option<ImageHandle>,
     _crop_needed: bool,
-    aspect_filter: AspectRatioFilter,
 ) -> Element<'a, Message> {
-    let filter_row = row![
-        text("Filter:").size(14),
-        pick_list(
-            AspectRatioFilter::ALL,
-            Some(aspect_filter),
-            Message::AspectFilterChanged,
-        )
-        .width(Length::Shrink),
-    ]
-    .spacing(8)
-    .padding([12, 8]);
-
-    let filtered: Vec<(usize, &Wallpaper)> = wallpapers
-        .iter()
-        .enumerate()
-        .filter(|(_, wp)| aspect_filter.matches(wp.width, wp.height))
-        .collect();
+    let filtered: Vec<(usize, &Wallpaper)> = wallpapers.iter().enumerate().collect();
 
     if filtered.is_empty() {
-        return column![
-            filter_row,
-            container(text(
-                "No favorites yet. Search for wallpapers and add some!"
-            ))
-            .center(Length::Fill)
-            .width(Length::Fill)
-            .height(Length::Fill),
-        ]
+        return container(text(
+            "No favorites yet. Search for wallpapers and add some!",
+        ))
+        .center(Length::Fill)
+        .width(Length::Fill)
+        .height(Length::Fill)
         .into();
     }
 
@@ -103,9 +83,10 @@ pub fn view<'a>(
         .spacing(8)
         .padding(16),
     )
-    .width(Length::Fill);
+    .width(Length::Fill)
+    .height(Length::Fill);
 
-    let mut left_col: iced::widget::Column<'a, Message> = column![filter_row];
+    let mut left_col: iced::widget::Column<'a, Message> = column![];
 
     if !multi_selected.is_empty() {
         let batch_bar = row![
@@ -125,7 +106,7 @@ pub fn view<'a>(
 
     left_col = left_col.push(grid);
 
-    left_col.width(Length::Fill).into()
+    left_col.width(Length::Fill).height(Length::Fill).into()
 }
 
 pub fn preview_content<'a>(

@@ -2,6 +2,7 @@ mod app;
 mod message;
 mod views;
 
+use iced::window;
 use iced::Size;
 
 fn main() -> iced::Result {
@@ -16,6 +17,13 @@ fn main() -> iced::Result {
         .title("Muralis")
         .theme(app::App::theme)
         .subscription(app::App::subscription)
-        .window_size(Size::new(1200.0, 800.0))
+        .window(window::Settings {
+            size: Size::new(1200.0, 800.0),
+            platform_specific: window::settings::PlatformSpecific {
+                application_id: "muralis".into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        })
         .run()
 }
