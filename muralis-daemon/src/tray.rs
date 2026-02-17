@@ -75,6 +75,16 @@ impl ksni::Tray for MuralisTray {
                     }
                     .into(),
                     StandardItem {
+                        label: "Random (Startup)".into(),
+                        activate: Box::new(|tray: &mut Self| {
+                            let _ = tray.cmd_tx.blocking_send(DaemonCommand::SetMode {
+                                mode: DisplayMode::RandomStartup,
+                            });
+                        }),
+                        ..Default::default()
+                    }
+                    .into(),
+                    StandardItem {
                         label: "Sequential".into(),
                         activate: Box::new(|tray: &mut Self| {
                             let _ = tray.cmd_tx.blocking_send(DaemonCommand::SetMode {

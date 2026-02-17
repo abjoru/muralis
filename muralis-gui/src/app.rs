@@ -47,6 +47,7 @@ pub struct App {
     crop_overlay_handle: Option<ImageHandle>,
     daemon_status: Option<DaemonStatus>,
     error_message: Option<String>,
+    settings_open: bool,
     config: Config,
     paths: MuralisPaths,
 }
@@ -81,6 +82,7 @@ impl App {
             crop_overlay_handle: None,
             daemon_status: None,
             error_message: None,
+            settings_open: false,
             config,
             paths,
         };
@@ -109,6 +111,14 @@ impl App {
                     key: iced::keyboard::Key::Named(iced::keyboard::key::Named::Escape),
                     ..
                 }) => Some(Message::ClosePreview),
+                _ => None,
+            })
+        } else if self.settings_open {
+            iced::event::listen_with(|event, _status, _window| match event {
+                iced::event::Event::Keyboard(iced::keyboard::Event::KeyPressed {
+                    key: iced::keyboard::Key::Named(iced::keyboard::key::Named::Escape),
+                    ..
+                }) => Some(Message::ToggleSettings),
                 _ => None,
             })
         } else {
@@ -605,6 +615,110 @@ impl App {
                 Task::none()
             }
 
+            Message::ToggleSettings => {
+                self.settings_open = !self.settings_open;
+                if self.settings_open {
+                    self.selected_index = None;
+                    self.preview_handle = None;
+                    self.preview_bytes = None;
+                    self.crop_overlay_handle = None;
+                }
+                Task::none()
+            }
+
+            Message::SettingsModeChanged(mode) => {
+                self.config.display.mode = mode;
+                let config = self.config.clone();
+                let paths = self.paths.clone();
+                let mut tasks = vec![Task::perform(
+                    async move { save_config(config, paths).await },
+                    |result| match result {
+                        Ok(()) => Message::ConfigSaved,
+                        Err(e) => Message::ConfigSaveError(e),
+                    },
+                )];
+                if self.daemon_status.is_some() {
+                    tasks.push(Task::perform(
+                        async move { ipc::send_request(&IpcRequest::SetMode { mode }).await },
+                        |result| Message::DaemonIpcResult(result.map_err(|e| e.to_string())),
+                    ));
+                }
+                Task::batch(tasks)
+            }
+
+            Message::SettingsBackendChanged(backend) => {
+                self.config.general.backend = backend;
+                let config = self.config.clone();
+                let paths = self.paths.clone();
+                Task::perform(
+                    async move { save_config(config, paths).await },
+                    |result| match result {
+                        Ok(()) => Message::ConfigSaved,
+                        Err(e) => Message::ConfigSaveError(e),
+                    },
+                )
+            }
+
+            Message::SettingsIntervalChanged(interval) => {
+                self.config.display.interval = interval;
+                let config = self.config.clone();
+                let paths = self.paths.clone();
+                let mut tasks = vec![Task::perform(
+                    async move { save_config(config, paths).await },
+                    |result| match result {
+                        Ok(()) => Message::ConfigSaved,
+                        Err(e) => Message::ConfigSaveError(e),
+                    },
+                )];
+                if self.daemon_status.is_some() {
+                    tasks.push(Task::perform(
+                        async move { ipc::send_request(&IpcRequest::Reload).await },
+                        |result| Message::DaemonIpcResult(result.map_err(|e| e.to_string())),
+                    ));
+                }
+                Task::batch(tasks)
+            }
+
+            Message::DaemonNext => Task::perform(
+                async move { ipc::send_request(&IpcRequest::Next).await },
+                |result| Message::DaemonIpcResult(result.map_err(|e| e.to_string())),
+            ),
+
+            Message::DaemonPrev => Task::perform(
+                async move { ipc::send_request(&IpcRequest::Prev).await },
+                |result| Message::DaemonIpcResult(result.map_err(|e| e.to_string())),
+            ),
+
+            Message::DaemonTogglePause => {
+                let paused = self
+                    .daemon_status
+                    .as_ref()
+                    .map(|s| s.paused)
+                    .unwrap_or(false);
+                let req = if paused {
+                    IpcRequest::Resume
+                } else {
+                    IpcRequest::Pause
+                };
+                Task::perform(async move { ipc::send_request(&req).await }, |result| {
+                    Message::DaemonIpcResult(result.map_err(|e| e.to_string()))
+                })
+            }
+
+            Message::DaemonIpcResult(Err(e)) => {
+                self.error_message = Some(e);
+                Task::none()
+            }
+
+            Message::DaemonIpcResult(Ok(_)) => Task::none(),
+
+            Message::ConfigSaved => Task::none(),
+
+            Message::ConfigSaveError(e) => {
+                self.error_message = Some(e);
+                Task::none()
+            }
+
             Message::Error(err) => {
                 self.loading = false;
                 self.preview_loading = false;
@@ -668,11 +782,22 @@ impl App {
         .width(28)
         .height(28);
 
+        let gear_style = if self.settings_open {
+            button::primary
+        } else {
+            button::text
+        };
+        let gear_btn = button(text("\u{2699}").size(18))
+            .on_press(Message::ToggleSettings)
+            .style(gear_style)
+            .padding([4, 8]);
+
         let mut tab_row = row![
             logo,
             text("Muralis")
                 .size(16)
                 .color(iced::Color::from_rgb8(0xa8, 0x99, 0x84)),
+            gear_btn,
             text("|").color(iced::Color::from_rgb8(0x66, 0x5c, 0x54)),
         ]
         .spacing(8)
@@ -694,71 +819,75 @@ impl App {
 
         let tabs = container(tab_row.padding([8, 8])).width(Length::Fill);
 
-        let (img_w, img_h) = self.selected_image_dimensions();
-        let (mon_w, mon_h) = self.monitor_dims;
-        let crop_needed = self.selected_index.is_some()
-            && !crop_overlay::ratios_match(img_w, img_h, mon_w, mon_h, 0.01);
+        let content = if self.settings_open {
+            views::settings::view(&self.config, &self.daemon_status)
+        } else {
+            let (img_w, img_h) = self.selected_image_dimensions();
+            let (mon_w, mon_h) = self.monitor_dims;
+            let crop_needed = self.selected_index.is_some()
+                && !crop_overlay::ratios_match(img_w, img_h, mon_w, mon_h, 0.01);
 
-        let (content, preview) = match &self.active_tab {
-            Tab::Favorites => {
-                let view = views::favorites::view(
-                    &self.favorites,
-                    &self.thumbnail_cache,
-                    self.selected_index,
-                    &self.preview_handle,
-                    self.preview_loading,
-                    &self.multi_selected,
-                    self.crop_overlay_active,
-                    &self.crop_overlay_handle,
-                    crop_needed,
-                );
-                let preview = views::favorites::preview_content(
-                    &self.favorites,
-                    self.selected_index,
-                    &self.preview_handle,
-                    self.preview_loading,
-                    self.crop_overlay_active,
-                    &self.crop_overlay_handle,
-                    crop_needed,
-                );
-                (view, preview)
-            }
-            tab => {
-                let results = match tab {
-                    Tab::Wallhaven => &self.wallhaven_results,
-                    Tab::Unsplash => &self.unsplash_results,
-                    Tab::Pexels => &self.pexels_results,
-                    Tab::Feeds => &self.feed_results,
-                    _ => unreachable!(),
-                };
-                let view = views::source_tab::view(
-                    &self.search_query,
-                    results,
-                    &self.thumbnail_cache,
-                    self.selected_index,
-                    &self.preview_handle,
-                    self.preview_loading,
-                    self.loading,
-                    self.current_page,
-                    &self.multi_selected,
-                    self.crop_overlay_active,
-                    &self.crop_overlay_handle,
-                    crop_needed,
-                    self.aspect_ratio_filter,
-                );
-                let preview = views::source_tab::preview_content(
-                    results,
-                    self.selected_index,
-                    &self.preview_handle,
-                    self.preview_loading,
-                    self.crop_overlay_active,
-                    &self.crop_overlay_handle,
-                    crop_needed,
-                );
-                (view, preview)
-            }
+            let (content, preview) = match &self.active_tab {
+                Tab::Favorites => {
+                    let view = views::favorites::view(
+                        &self.favorites,
+                        &self.thumbnail_cache,
+                        self.selected_index,
+                        &self.preview_handle,
+                        self.preview_loading,
+                        &self.multi_selected,
+                        self.crop_overlay_active,
+                        &self.crop_overlay_handle,
+                        crop_needed,
+                    );
+                    let preview = views::favorites::preview_content(
+                        &self.favorites,
+                        self.selected_index,
+                        &self.preview_handle,
+                        self.preview_loading,
+                        self.crop_overlay_active,
+                        &self.crop_overlay_handle,
+                        crop_needed,
+                    );
+                    (view, preview)
+                }
+                tab => {
+                    let results = match tab {
+                        Tab::Wallhaven => &self.wallhaven_results,
+                        Tab::Unsplash => &self.unsplash_results,
+                        Tab::Pexels => &self.pexels_results,
+                        Tab::Feeds => &self.feed_results,
+                        _ => unreachable!(),
+                    };
+                    let view = views::source_tab::view(
+                        &self.search_query,
+                        results,
+                        &self.thumbnail_cache,
+                        self.selected_index,
+                        &self.preview_handle,
+                        self.preview_loading,
+                        self.loading,
+                        self.current_page,
+                        &self.multi_selected,
+                        self.crop_overlay_active,
+                        &self.crop_overlay_handle,
+                        crop_needed,
+                        self.aspect_ratio_filter,
+                    );
+                    let preview = views::source_tab::preview_content(
+                        results,
+                        self.selected_index,
+                        &self.preview_handle,
+                        self.preview_loading,
+                        self.crop_overlay_active,
+                        &self.crop_overlay_handle,
+                        crop_needed,
+                    );
+                    (view, preview)
+                }
+            };
+            views::preview_overlay::wrap_with_overlay(content, preview)
         };
-        let content = views::preview_overlay::wrap_with_overlay(content, preview);
 
         let status_bar = {
             let status_text = if let Some(ref err) = self.error_message {
@@ -835,6 +964,13 @@ async fn search_source(
     }
 
     anyhow::bail!("source {source_name} not configured")
+}
+
+async fn save_config(config: Config, paths: MuralisPaths) -> Result<(), String> {
+    tokio::task::spawn_blocking(move || config.save(&paths))
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())
 }
 
 async fn detect_monitors() -> Option<(u32, u32)> {

@@ -26,7 +26,7 @@ enum Commands {
     },
     /// Switch display mode
     Mode {
-        /// Mode: static, random, sequential, workspace, schedule
+        /// Mode: static, random, random_startup, sequential, workspace, schedule
         mode: String,
     },
     /// Pause wallpaper rotation

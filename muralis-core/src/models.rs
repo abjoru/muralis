@@ -76,9 +76,21 @@ pub struct BlacklistEntry {
 pub enum DisplayMode {
     Static,
     Random,
+    RandomStartup,
     Sequential,
     Workspace,
     Schedule,
+}
+
+impl DisplayMode {
+    pub const ALL: &[DisplayMode] = &[
+        DisplayMode::Static,
+        DisplayMode::Random,
+        DisplayMode::RandomStartup,
+        DisplayMode::Sequential,
+        DisplayMode::Workspace,
+        DisplayMode::Schedule,
+    ];
 }
 
 impl std::fmt::Display for DisplayMode {
@@ -86,6 +98,7 @@ impl std::fmt::Display for DisplayMode {
         match self {
             Self::Static => write!(f, "static"),
             Self::Random => write!(f, "random"),
+            Self::RandomStartup => write!(f, "random_startup"),
             Self::Sequential => write!(f, "sequential"),
             Self::Workspace => write!(f, "workspace"),
             Self::Schedule => write!(f, "schedule"),
@@ -100,6 +113,7 @@ impl std::str::FromStr for DisplayMode {
         match s {
             "static" => Ok(Self::Static),
             "random" => Ok(Self::Random),
+            "random_startup" => Ok(Self::RandomStartup),
             "sequential" => Ok(Self::Sequential),
             "workspace" => Ok(Self::Workspace),
             "schedule" => Ok(Self::Schedule),
@@ -113,6 +127,10 @@ impl std::str::FromStr for DisplayMode {
 pub enum BackendType {
     Hyprpaper,
     Swww,
+}
+
+impl BackendType {
+    pub const ALL: &[BackendType] = &[BackendType::Hyprpaper, BackendType::Swww];
 }
 
 impl std::fmt::Display for BackendType {

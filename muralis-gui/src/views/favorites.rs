@@ -38,46 +38,57 @@ pub fn view<'a>(
             filtered
                 .chunks(cols)
                 .map(|chunk| {
-                    row(chunk
-                        .iter()
-                        .map(|(orig_idx, wp)| {
-                            let idx = *orig_idx;
-                            let is_selected = selected_index == Some(idx);
-                            let thumb: Element<'a, Message> =
-                                if let Some(handle) = thumbnail_cache.get(&wp.id) {
-                                    Image::new(handle.clone())
-                                        .width(Length::Fill)
-                                        .height(180)
-                                        .content_fit(iced::ContentFit::Contain)
-                                        .into()
+                    {
+                        let mut cells: Vec<Element<'a, Message>> = chunk
+                            .iter()
+                            .map(|(orig_idx, wp)| {
+                                let idx = *orig_idx;
+                                let is_selected = selected_index == Some(idx);
+                                let thumb: Element<'a, Message> =
+                                    if let Some(handle) = thumbnail_cache.get(&wp.id) {
+                                        Image::new(handle.clone())
+                                            .width(Length::Fill)
+                                            .content_fit(iced::ContentFit::Contain)
+                                            .into()
+                                    } else {
+                                        container(text("Loading..."))
+                                            .width(Length::Fill)
+                                            .height(180)
+                                            .center(Length::Fill)
+                                            .style(container::bordered_box)
+                                            .into()
+                                    };
+
+                                let is_multi = multi_selected.contains(&idx);
+                                let style = if is_selected || is_multi {
+                                    button::secondary
                                 } else {
-                                    container(text("Loading..."))
-                                        .width(Length::Fill)
-                                        .height(180)
-                                        .center(Length::Fill)
-                                        .style(container::bordered_box)
-                                        .into()
+                                    button::text
                                 };
 
-                            let is_multi = multi_selected.contains(&idx);
-                            let style = if is_selected || is_multi {
-                                button::secondary
-                            } else {
-                                button::text
-                            };
+                                container(
+                                    button(thumb)
+                                        .on_press(Message::ThumbnailClicked(idx))
+                                        .style(style)
+                                        .padding(0),
+                                )
+                                .width(Length::FillPortion(1))
+                                .into()
+                            })
+                            .collect();
 
-                            container(
-                                button(thumb)
-                                    .on_press(Message::ThumbnailClicked(idx))
-                                    .style(style)
-                                    .padding(0),
-                            )
-                            .width(Length::FillPortion(1))
-                            .into()
-                        })
-                        .collect::<Vec<Element<'a, Message>>>())
-                    .spacing(8)
-                    .into()
+                        // pad incomplete rows so items keep consistent width
+                        for _ in chunk.len()..cols {
+                            cells.push(
+                                Space::new()
+                                    .width(Length::FillPortion(1))
+                                    .height(Length::Shrink)
+                                    .into(),
+                            );
+                        }
+
+                        row(cells).spacing(8).into()
+                    }
                 })
                 .collect::<Vec<Element<'a, Message>>>(),
         )

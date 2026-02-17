@@ -29,6 +29,14 @@ impl Config {
     pub fn load_or_default(paths: &MuralisPaths) -> Self {
         Self::load(paths).unwrap_or_default()
     }
+
+    pub fn save(&self, paths: &MuralisPaths) -> Result<()> {
+        let content = toml::to_string_pretty(self)
+            .map_err(|e| MuralisError::Config(format!("failed to serialize config: {e}")))?;
+        let path = paths.config_file();
+        std::fs::write(&path, content)
+            .map_err(|e| MuralisError::Config(format!("failed to write {}: {e}", path.display())))
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

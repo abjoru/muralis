@@ -76,14 +76,16 @@ pub fn view<'a>(
                 filtered
                     .chunks(cols)
                     .map(|chunk| {
-                        row(chunk
-                            .iter()
-                            .map(|(orig_idx, preview)| {
-                                let idx = *orig_idx;
-                                let is_selected = selected_index == Some(idx);
+                        {
+                            let mut cells: Vec<Element<'a, Message>> = chunk
+                                .iter()
+                                .map(|(orig_idx, preview)| {
+                                    let idx = *orig_idx;
+                                    let is_selected = selected_index == Some(idx);
 
-                                let thumb: Element<'a, Message> =
-                                    if let Some(handle) = thumbnail_cache.get(&preview.source_id) {
+                                    let thumb: Element<'a, Message> = if let Some(handle) =
+                                        thumbnail_cache.get(&preview.source_id)
+                                    {
                                         Image::new(handle.clone())
                                             .width(Length::Fill)
                                             .height(180)
@@ -98,25 +100,36 @@ pub fn view<'a>(
                                             .into()
                                     };
 
-                                let is_multi = multi_selected.contains(&idx);
-                                let style = if is_selected || is_multi {
-                                    button::secondary
-                                } else {
-                                    button::text
-                                };
+                                    let is_multi = multi_selected.contains(&idx);
+                                    let style = if is_selected || is_multi {
+                                        button::secondary
+                                    } else {
+                                        button::text
+                                    };
 
-                                container(
-                                    button(thumb)
-                                        .on_press(Message::ThumbnailClicked(idx))
-                                        .style(style)
-                                        .padding(0),
-                                )
-                                .width(Length::FillPortion(1))
-                                .into()
-                            })
-                            .collect::<Vec<Element<'a, Message>>>())
-                        .spacing(8)
-                        .into()
+                                    container(
+                                        button(thumb)
+                                            .on_press(Message::ThumbnailClicked(idx))
+                                            .style(style)
+                                            .padding(0),
+                                    )
+                                    .width(Length::FillPortion(1))
+                                    .into()
+                                })
+                                .collect();
+
+                            // pad incomplete rows so items keep consistent width
+                            for _ in chunk.len()..cols {
+                                cells.push(
+                                    Space::new()
+                                        .width(Length::FillPortion(1))
+                                        .height(Length::Shrink)
+                                        .into(),
+                                );
+                            }
+
+                            row(cells).spacing(8).into()
+                        }
                     })
                     .collect::<Vec<Element<'a, Message>>>(),
             )

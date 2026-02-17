@@ -1,5 +1,5 @@
-use muralis_core::ipc::DaemonStatus;
-use muralis_core::models::{Wallpaper, WallpaperPreview};
+use muralis_core::ipc::{DaemonStatus, IpcResponse};
+use muralis_core::models::{BackendType, DisplayMode, Wallpaper, WallpaperPreview};
 pub use muralis_core::sources::AspectRatioFilter;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -90,6 +90,18 @@ pub enum Message {
     MonitorsDetected(u32, u32),
     ToggleCropOverlay,
     CropOverlayReady(Vec<u8>),
+
+    // settings
+    ToggleSettings,
+    SettingsModeChanged(DisplayMode),
+    SettingsBackendChanged(BackendType),
+    SettingsIntervalChanged(String),
+    DaemonNext,
+    DaemonPrev,
+    DaemonTogglePause,
+    DaemonIpcResult(Result<IpcResponse, String>),
+    ConfigSaved,
+    ConfigSaveError(String),
 
     // errors
     Error(String),

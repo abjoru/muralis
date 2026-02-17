@@ -51,6 +51,11 @@ impl DisplayEngine {
     ) {
         self.reload_wallpapers();
 
+        // RandomStartup: pick one wallpaper at launch, then behave like Static
+        if self.mode == DisplayMode::RandomStartup {
+            self.next().await;
+        }
+
         // initial cache prune
         self.prune_cache();
 
@@ -163,7 +168,7 @@ impl DisplayEngine {
         }
 
         match self.mode {
-            DisplayMode::Random => {
+            DisplayMode::Random | DisplayMode::RandomStartup => {
                 use rand::Rng;
                 let idx = rand::rng().random_range(0..self.wallpapers.len());
                 self.current_index = idx;
