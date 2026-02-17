@@ -1,0 +1,86 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    container: archlinux:latest
+
+    permissions:
+      contents: write
+
+    steps:
+      - name: Install dependencies
+        run: |
+          pacman -Syu --noconfirm
+          pacman -S --noconfirm git base-devel rustup pkg-config wget
+
+      - uses: actions/checkout@v4
+
+      - name: Get version from tag
+        id: get_version
+        run: echo "version=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+
+      - name: Setup Rust
+        run: rustup default stable
+
+      - name: Cache Rust dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-release-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-release-
+
+      - name: Build release
+        run: cargo build --release --locked
+
+      - name: Strip binaries
+        run: |
+          strip target/release/muralis
+          strip target/release/muralis-daemon
+          strip target/release/muralis-gui
+
+      - name: Create tarball
+        run: |
+          mkdir -p release
+          cp target/release/muralis release/
+          cp target/release/muralis-daemon release/
+          cp target/release/muralis-gui release/
+          cp assets/muralis.svg release/
+          cp README.md LICENSE release/ 2>/dev/null || true
+          tar -czvf muralis-${{ steps.get_version.outputs.version }}-x86_64-linux.tar.gz -C release .
+
+      - name: Generate AUR checksum
+        id: aur_checksum
+        run: |
+          VERSION=${{ steps.get_version.outputs.version }}
+          wget "https://github.com/abjoru/muralis/archive/v${VERSION}.tar.gz" -O source.tar.gz
+          SHA256=$(sha256sum source.tar.gz | cut -d' ' -f1)
+          echo "sha256=${SHA256}" >> $GITHUB_OUTPUT
+          echo "## AUR Package Update" >> $GITHUB_STEP_SUMMARY
+          echo "Update \`muralis/PKGBUILD\` in bbdata-aur:" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+          echo "pkgver=${VERSION}" >> $GITHUB_STEP_SUMMARY
+          echo "sha256sums=('${SHA256}')" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+
+      - name: Create Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION=${{ steps.get_version.outputs.version }}
+          gh release create v${VERSION} \
+            --title "Release v${VERSION}" \
+            --generate-notes \
+            muralis-${VERSION}-x86_64-linux.tar.gz
