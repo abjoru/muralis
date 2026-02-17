@@ -8,6 +8,7 @@ use crate::display::DaemonCommand;
 
 struct MuralisTray {
     cmd_tx: mpsc::Sender<DaemonCommand>,
+    gui: Option<std::process::Child>,
 }
 
 impl MuralisTray {
@@ -38,7 +39,15 @@ impl ksni::Tray for MuralisTray {
 
     fn activate(&mut self, _x: i32, _y: i32) {
         use std::process::Command;
-        let _ = Command::new("muralis-gui").spawn();
+        if let Some(child) = self.gui.as_mut() {
+            if child.try_wait().ok().flatten().is_none() {
+                let _ = child.kill();
+                let _ = child.wait();
+                self.gui = None;
+                return;
+            }
+        }
+        self.gui = Command::new("muralis-gui").spawn().ok();
     }
 
     fn menu(&self) -> Vec<ksni::MenuItem<Self>> {
@@ -124,7 +133,7 @@ impl ksni::Tray for MuralisTray {
 
 pub fn spawn_tray(cmd_tx: mpsc::Sender<DaemonCommand>) {
     std::thread::spawn(move || {
-        let tray = MuralisTray { cmd_tx };
+        let tray = MuralisTray { cmd_tx, gui: None };
         match tray.spawn() {
             Ok(_handle) => {
                 info!("tray spawned");
