@@ -2890,7 +2890,7 @@ dependencies = [
 
 [[package]]
 name = "muralis"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "clap",
@@ -2903,7 +2903,7 @@ dependencies = [
 
 [[package]]
 name = "muralis-core"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2929,7 +2929,7 @@ dependencies = [
 
 [[package]]
 name = "muralis-daemon"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "chrono",
@@ -2946,7 +2946,7 @@ dependencies = [
 
 [[package]]
 name = "muralis-gui"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "iced",
