@@ -10,6 +10,12 @@ struct MuralisTray {
     cmd_tx: mpsc::Sender<DaemonCommand>,
 }
 
+impl MuralisTray {
+    fn send(&self, cmd: DaemonCommand) {
+        let _ = self.cmd_tx.try_send(cmd);
+    }
+}
+
 impl ksni::Tray for MuralisTray {
     fn id(&self) -> String {
         "muralis".into()
@@ -30,23 +36,24 @@ impl ksni::Tray for MuralisTray {
         }
     }
 
+    fn activate(&mut self, _x: i32, _y: i32) {
+        use std::process::Command;
+        let _ = Command::new("muralis-gui").spawn();
+    }
+
     fn menu(&self) -> Vec<ksni::MenuItem<Self>> {
         use ksni::menu::*;
 
         vec![
             StandardItem {
                 label: "Next".into(),
-                activate: Box::new(|tray: &mut Self| {
-                    let _ = tray.cmd_tx.blocking_send(DaemonCommand::Next);
-                }),
+                activate: Box::new(|tray: &mut Self| tray.send(DaemonCommand::Next)),
                 ..Default::default()
             }
             .into(),
             StandardItem {
                 label: "Previous".into(),
-                activate: Box::new(|tray: &mut Self| {
-                    let _ = tray.cmd_tx.blocking_send(DaemonCommand::Prev);
-                }),
+                activate: Box::new(|tray: &mut Self| tray.send(DaemonCommand::Prev)),
                 ..Default::default()
             }
             .into(),
@@ -57,7 +64,7 @@ impl ksni::Tray for MuralisTray {
                     StandardItem {
                         label: "Static".into(),
                         activate: Box::new(|tray: &mut Self| {
-                            let _ = tray.cmd_tx.blocking_send(DaemonCommand::SetMode {
+                            tray.send(DaemonCommand::SetMode {
                                 mode: DisplayMode::Static,
                             });
                         }),
@@ -67,7 +74,7 @@ impl ksni::Tray for MuralisTray {
                     StandardItem {
                         label: "Random".into(),
                         activate: Box::new(|tray: &mut Self| {
-                            let _ = tray.cmd_tx.blocking_send(DaemonCommand::SetMode {
+                            tray.send(DaemonCommand::SetMode {
                                 mode: DisplayMode::Random,
                             });
                         }),
@@ -77,7 +84,7 @@ impl ksni::Tray for MuralisTray {
                     StandardItem {
                         label: "Random (Startup)".into(),
                         activate: Box::new(|tray: &mut Self| {
-                            let _ = tray.cmd_tx.blocking_send(DaemonCommand::SetMode {
+                            tray.send(DaemonCommand::SetMode {
                                 mode: DisplayMode::RandomStartup,
                             });
                         }),
@@ -87,7 +94,7 @@ impl ksni::Tray for MuralisTray {
                     StandardItem {
                         label: "Sequential".into(),
                         activate: Box::new(|tray: &mut Self| {
-                            let _ = tray.cmd_tx.blocking_send(DaemonCommand::SetMode {
+                            tray.send(DaemonCommand::SetMode {
                                 mode: DisplayMode::Sequential,
                             });
                         }),
@@ -100,18 +107,14 @@ impl ksni::Tray for MuralisTray {
             .into(),
             StandardItem {
                 label: "Pause".into(),
-                activate: Box::new(|tray: &mut Self| {
-                    let _ = tray.cmd_tx.blocking_send(DaemonCommand::Pause);
-                }),
+                activate: Box::new(|tray: &mut Self| tray.send(DaemonCommand::Pause)),
                 ..Default::default()
             }
             .into(),
             MenuItem::Separator,
             StandardItem {
                 label: "Quit".into(),
-                activate: Box::new(|tray: &mut Self| {
-                    let _ = tray.cmd_tx.blocking_send(DaemonCommand::Quit);
-                }),
+                activate: Box::new(|tray: &mut Self| tray.send(DaemonCommand::Quit)),
                 ..Default::default()
             }
             .into(),
