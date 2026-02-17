@@ -2911,7 +2911,6 @@ dependencies = [
  "chrono",
  "dirs",
  "feed-rs",
- "hex",
  "image",
  "libc",
  "reqwest",

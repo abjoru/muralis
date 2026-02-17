@@ -18,7 +18,6 @@ anyhow = { workspace = true }
 tracing = { workspace = true }
 image = { workspace = true }
 sha2 = { workspace = true }
-hex = { workspace = true }
 dirs = { workspace = true }
 feed-rs = { workspace = true }
 chrono = { workspace = true }
