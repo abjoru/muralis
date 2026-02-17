@@ -1,0 +1,18 @@
+[package]
+name = "muralis-daemon"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+muralis-core = { path = "../muralis-core" }
+tokio = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+serde_json = { workspace = true }
+ksni = { workspace = true }
+hyprland = { workspace = true }
+rand = { workspace = true }
+chrono = { workspace = true }
+futures-lite = { workspace = true }

@@ -1,0 +1,42 @@
+[workspace]
+members = [
+    "muralis-core",
+    "muralis-daemon",
+    "muralis-cli",
+    "muralis-gui",
+]
+resolver = "2"
+
+[workspace.package]
+edition = "2021"
+version = "0.1.0"
+license = "MIT"
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+tokio = { version = "1", features = ["full"] }
+async-trait = "0.1"
+reqwest = { version = "0.12", features = ["json", "native-tls"] }
+bytes = "1"
+rusqlite = { version = "0.32", features = ["bundled"] }
+thiserror = "2"
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+clap = { version = "4", features = ["derive"] }
+image = "0.25"
+sha2 = "0.10"
+hex = "0.4"
+dirs = "6"
+feed-rs = "2.3"
+hyprland = "0.4.0-alpha.2"
+ksni = { version = "0.3", features = ["blocking"] }
+iced = { version = "0.14", features = ["image", "tokio", "advanced"] }
+chrono = { version = "0.4", features = ["serde"] }
+scraper = "0.22"
+url = { version = "2", features = ["serde"] }
+libc = "0.2"
+rand = "0.9"
+futures-lite = "2"
