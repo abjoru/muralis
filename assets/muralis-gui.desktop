@@ -1,0 +1,9 @@
+[Desktop Entry]
+Name=Muralis
+Comment=Wayland wallpaper manager
+Exec=muralis-gui
+Icon=muralis
+Terminal=false
+Type=Application
+Categories=Utility;Settings;
+Keywords=Wallpaper;Wayland;

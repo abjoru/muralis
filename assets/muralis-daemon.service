@@ -1,0 +1,11 @@
+[Unit]
+Description=Muralis wallpaper daemon
+After=graphical-session.target
+
+[Service]
+ExecStart=/usr/bin/muralis-daemon
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=graphical-session.target
