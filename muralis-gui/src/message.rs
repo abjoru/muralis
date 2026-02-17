@@ -80,6 +80,9 @@ pub enum Message {
     ConfigSaved,
     ConfigSaveError(String),
 
+    // window
+    WindowResized(f32, f32),
+
     // errors
     Error(String),
     Noop,

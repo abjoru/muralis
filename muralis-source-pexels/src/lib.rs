@@ -56,8 +56,10 @@ impl WallpaperSource for PexelsClient {
         &self,
         query: &str,
         page: u32,
+        per_page: u32,
         _aspect: AspectRatioFilter,
     ) -> Result<Vec<WallpaperPreview>> {
+        let clamped = per_page.min(80);
         let resp: PexelsSearchResponse = self
             .client
             .get(format!("{API_BASE}/search"))
@@ -65,7 +67,7 @@ impl WallpaperSource for PexelsClient {
             .query(&[
                 ("query", query),
                 ("page", &page.to_string()),
-                ("per_page", "24"),
+                ("per_page", &clamped.to_string()),
                 ("orientation", "landscape"),
             ])
             .send()

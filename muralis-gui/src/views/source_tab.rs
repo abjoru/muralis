@@ -25,6 +25,7 @@ pub fn view<'a>(
     _crop_overlay_handle: &'a Option<ImageHandle>,
     _crop_needed: bool,
     aspect_filter: AspectRatioFilter,
+    is_feed: bool,
 ) -> Element<'a, Message> {
     let search_bar = row![
         text_input("Search wallpapers...", search_query)
@@ -64,7 +65,12 @@ pub fn view<'a>(
             .height(Length::Fill)
             .into()
     } else if filtered.is_empty() {
-        container(text("Enter a search query to find wallpapers"))
+        let msg = if is_feed {
+            "No wallpapers found"
+        } else {
+            "Enter a search query to find wallpapers"
+        };
+        container(text(msg))
             .center(Length::Fill)
             .width(Length::Fill)
             .height(Length::Fill)
@@ -115,7 +121,7 @@ pub fn view<'a>(
         grid.into()
     };
 
-    let has_next = filtered.len() >= 24;
+    let has_next = !results.is_empty();
     let pagination = row![
         button("< Prev").on_press_maybe(if current_page > 1 {
             Some(Message::PrevPage)
@@ -134,7 +140,11 @@ pub fn view<'a>(
     .spacing(8)
     .padding([8, 16]);
 
-    let mut left = column![search_bar];
+    let mut left = column![];
+
+    if !is_feed {
+        left = left.push(search_bar);
+    }
 
     if !multi_selected.is_empty() {
         let batch_bar = row![
@@ -157,7 +167,7 @@ pub fn view<'a>(
 
     left = left.push(content_area);
 
-    if !filtered.is_empty() {
+    if !is_feed && !filtered.is_empty() {
         left = left.push(pagination);
     }
 

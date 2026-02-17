@@ -58,6 +58,7 @@ pub struct App {
     preview_handle: Option<ImageHandle>,
     preview_loading: bool,
     preview_bytes: Option<Vec<u8>>,
+    window_size: (f32, f32),
     monitor_dims: (u32, u32),
     aspect_ratio_filter: AspectRatioFilter,
     crop_overlay_active: bool,
@@ -96,6 +97,7 @@ impl App {
             preview_handle: None,
             preview_loading: false,
             preview_bytes: None,
+            window_size: (1200.0, 800.0),
             monitor_dims: (1920, 1080),
             aspect_ratio_filter: AspectRatioFilter::All,
             crop_overlay_active: true,
@@ -120,12 +122,31 @@ impl App {
         (app, Task::batch([load, detect]))
     }
 
+    fn items_per_page(&self) -> u32 {
+        let (w, h) = self.window_size;
+        let padding = 16.0;
+        let spacing = 8.0;
+        let thumb_w = 220.0;
+        let thumb_h = 160.0;
+        let chrome = 120.0; // tab bar + search bar + pagination
+        let cols = ((w - 2.0 * padding) / (thumb_w + spacing)).floor().max(1.0);
+        let rows = ((h - chrome) / (thumb_h + spacing)).floor().max(1.0);
+        (cols * rows) as u32
+    }
+
     pub fn theme(&self) -> Theme {
         Theme::GruvboxDark
     }
 
     pub fn subscription(&self) -> iced::Subscription<Message> {
-        if self.selected_index.is_some() {
+        let resize = iced::event::listen_with(|event, _status, _window| match event {
+            iced::event::Event::Window(iced::window::Event::Resized(size)) => {
+                Some(Message::WindowResized(size.width, size.height))
+            }
+            _ => None,
+        });
+
+        let escape = if self.selected_index.is_some() {
             iced::event::listen_with(|event, _status, _window| match event {
                 iced::event::Event::Keyboard(iced::keyboard::Event::KeyPressed {
                     key: iced::keyboard::Key::Named(iced::keyboard::key::Named::Escape),
@@ -143,7 +164,9 @@ impl App {
             })
         } else {
             iced::Subscription::none()
-        }
+        };
+
+        iced::Subscription::batch([resize, escape])
     }
 
     pub fn update(&mut self, message: Message) -> Task<Message> {
@@ -163,6 +186,11 @@ impl App {
                         Err(e) => Message::Error(e.to_string()),
                     });
                 }
+                if let Tab::Source(ref name) = self.active_tab {
+                    if self.is_feed_source(name) {
+                        return self.update(Message::SearchSubmit);
+                    }
+                }
                 Task::none()
             }
 
@@ -179,13 +207,14 @@ impl App {
                 self.error_message = None;
                 let query = self.search_query.clone();
                 let page = self.current_page;
+                let per_page = self.items_per_page();
                 let tab = self.active_tab.clone();
                 let name = name.clone();
                 let aspect = self.aspect_ratio_filter;
                 let registry = Arc::clone(&self.registry);
 
                 Task::perform(
-                    async move { search_source(&registry, &name, &query, page, aspect).await },
+                    async move { search_source(&registry, &name, &query, page, per_page, aspect).await },
                     move |result| match result {
                         Ok(results) => Message::SearchResults(tab.clone(), results),
                         Err(e) => Message::SearchError(e.to_string()),
@@ -739,6 +768,11 @@ impl App {
                 Task::none()
             }
 
+            Message::WindowResized(w, h) => {
+                self.window_size = (w, h);
+                Task::none()
+            }
+
             Message::Error(err) => {
                 self.loading = false;
                 self.preview_loading = false;
@@ -769,6 +803,13 @@ impl App {
         } else {
             (0, 0)
         }
+    }
+
+    fn is_feed_source(&self, name: &str) -> bool {
+        self.registry
+            .get(name)
+            .map(|s| s.source_type() == "feed")
+            .unwrap_or(false)
     }
 
     fn active_source_results(&self) -> &[WallpaperPreview] {
@@ -879,6 +920,7 @@ impl App {
                         .get(name)
                         .map(|v| v.as_slice())
                         .unwrap_or(&[]);
+                    let is_feed = self.is_feed_source(name);
                     let view = views::source_tab::view(
                         &self.search_query,
                         results,
@@ -893,6 +935,7 @@ impl App {
                         &self.crop_overlay_handle,
                         crop_needed,
                         self.aspect_ratio_filter,
+                        is_feed,
                     );
                     let preview = views::source_tab::preview_content(
                         results,
@@ -950,13 +993,14 @@ async fn search_source(
     name: &str,
     query: &str,
     page: u32,
+    per_page: u32,
     aspect: AspectRatioFilter,
 ) -> anyhow::Result<Vec<WallpaperPreview>> {
     let source = registry
         .get(name)
         .ok_or_else(|| anyhow::anyhow!("source {name} not configured"))?;
     source
-        .search(query, page, aspect)
+        .search(query, page, per_page, aspect)
         .await
         .map_err(|e| e.into())
 }

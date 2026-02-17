@@ -68,6 +68,7 @@ impl WallpaperSource for FeedSource {
         &self,
         _query: &str,
         _page: u32,
+        _per_page: u32,
         _aspect: AspectRatioFilter,
     ) -> Result<Vec<WallpaperPreview>> {
         let body = self

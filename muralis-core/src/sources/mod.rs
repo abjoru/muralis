@@ -106,6 +106,7 @@ pub trait WallpaperSource: Send + Sync {
         &self,
         query: &str,
         page: u32,
+        per_page: u32,
         aspect: AspectRatioFilter,
     ) -> Result<Vec<WallpaperPreview>>;
     async fn download(&self, preview: &WallpaperPreview) -> Result<bytes::Bytes>;

@@ -66,6 +66,7 @@ impl WallpaperSource for WallhavenClient {
         &self,
         query: &str,
         page: u32,
+        _per_page: u32,
         aspect: AspectRatioFilter,
     ) -> Result<Vec<WallpaperPreview>> {
         let mut req = self.client.get(format!("{API_BASE}/search")).query(&[
