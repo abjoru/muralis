@@ -20,7 +20,7 @@ jobs:
       - name: Install dependencies
         run: |
           pacman -Syu --noconfirm
-          pacman -S --noconfirm git base-devel rustup pkg-config wget
+          pacman -S --noconfirm git base-devel rustup pkg-config wget github-cli
 
       - uses: actions/checkout@v4
 
