@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+set -e
+
+echo "Running pre-commit checks..."
+
+echo "  cargo fmt..."
+cargo fmt --all -- --check
+
+echo "  cargo clippy..."
+cargo clippy --workspace -- -D warnings
+
+echo "  cargo test..."
+cargo test --workspace
+
+echo "All checks passed."
