@@ -104,7 +104,12 @@ impl fmt::Display for AspectRatioFilter {
 
 #[async_trait]
 pub trait WallpaperSource: Send + Sync {
-    async fn search(&self, query: &str, page: u32, aspect: AspectRatioFilter) -> Result<Vec<WallpaperPreview>>;
+    async fn search(
+        &self,
+        query: &str,
+        page: u32,
+        aspect: AspectRatioFilter,
+    ) -> Result<Vec<WallpaperPreview>>;
     async fn download(&self, preview: &WallpaperPreview) -> Result<bytes::Bytes>;
     fn name(&self) -> &str;
 }

@@ -8,6 +8,12 @@ pub struct FeedClient {
     client: reqwest::Client,
 }
 
+impl Default for FeedClient {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl FeedClient {
     pub fn new() -> Self {
         Self {
@@ -27,9 +33,7 @@ impl FeedClient {
 
         for entry in &feed.entries {
             if let Some(image_url) = extract_image(entry) {
-                let id = entry
-                    .id
-                    .replace(['/', ':', '.'], "_");
+                let id = entry.id.replace(['/', ':', '.'], "_");
                 let title = entry
                     .title
                     .as_ref()
@@ -72,19 +76,28 @@ fn extract_image(entry: &feed_rs::model::Entry) -> Option<String> {
         for content in &media.content {
             if let Some(ref url) = content.url {
                 let url_str = url.as_str();
-                if is_image_url(url_str) || content.content_type.as_ref().is_some_and(|t| t.ty() == "image") {
+                if is_image_url(url_str)
+                    || content
+                        .content_type
+                        .as_ref()
+                        .is_some_and(|t| t.ty() == "image")
+                {
                     return Some(url_str.to_string());
                 }
             }
         }
-        for thumb in &media.thumbnails {
+        if let Some(thumb) = media.thumbnails.first() {
             return Some(thumb.image.uri.clone());
         }
     }
 
     // 2. enclosures / links with image type
     for link in &entry.links {
-        if link.media_type.as_deref().is_some_and(|t| t.starts_with("image/")) {
+        if link
+            .media_type
+            .as_deref()
+            .is_some_and(|t| t.starts_with("image/"))
+        {
             return Some(link.href.clone());
         }
     }
@@ -129,7 +142,8 @@ mod tests {
 
     #[test]
     fn test_extract_img_from_html() {
-        let html = r#"<p>Hello</p><img src="https://example.com/image.jpg" alt="test"><p>World</p>"#;
+        let html =
+            r#"<p>Hello</p><img src="https://example.com/image.jpg" alt="test"><p>World</p>"#;
         let url = extract_img_from_html(html).unwrap();
         assert_eq!(url, "https://example.com/image.jpg");
     }

@@ -24,16 +24,18 @@ impl WallhavenClient {
 
 #[async_trait]
 impl WallpaperSource for WallhavenClient {
-    async fn search(&self, query: &str, page: u32, aspect: AspectRatioFilter) -> Result<Vec<WallpaperPreview>> {
-        let mut req = self
-            .client
-            .get(format!("{API_BASE}/search"))
-            .query(&[
-                ("q", query),
-                ("page", &page.to_string()),
-                ("categories", &self.config.categories),
-                ("purity", &self.config.purity),
-            ]);
+    async fn search(
+        &self,
+        query: &str,
+        page: u32,
+        aspect: AspectRatioFilter,
+    ) -> Result<Vec<WallpaperPreview>> {
+        let mut req = self.client.get(format!("{API_BASE}/search")).query(&[
+            ("q", query),
+            ("page", &page.to_string()),
+            ("categories", &self.config.categories),
+            ("purity", &self.config.purity),
+        ]);
 
         if let Some(ref key) = self.config.api_key {
             req = req.query(&[("apikey", key)]);
@@ -55,18 +57,20 @@ impl WallpaperSource for WallhavenClient {
                 full_url: w.path,
                 width: w.dimension_x,
                 height: w.dimension_y,
-                tags: w
-                    .tags
-                    .into_iter()
-                    .map(|t| t.name)
-                    .collect(),
+                tags: w.tags.into_iter().map(|t| t.name).collect(),
             })
             .collect();
         Ok(previews)
     }
 
     async fn download(&self, preview: &WallpaperPreview) -> Result<bytes::Bytes> {
-        let bytes = self.client.get(&preview.full_url).send().await?.bytes().await?;
+        let bytes = self
+            .client
+            .get(&preview.full_url)
+            .send()
+            .await?
+            .bytes()
+            .await?;
         Ok(bytes)
     }
 

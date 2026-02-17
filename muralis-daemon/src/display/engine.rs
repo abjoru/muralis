@@ -29,11 +29,7 @@ pub struct DisplayEngine {
 }
 
 impl DisplayEngine {
-    pub fn new(
-        config: Config,
-        paths: MuralisPaths,
-        backend: Box<dyn WallpaperBackend>,
-    ) -> Self {
+    pub fn new(config: Config, paths: MuralisPaths, backend: Box<dyn WallpaperBackend>) -> Self {
         let mode = config.display.mode;
         Self {
             config,
@@ -58,8 +54,8 @@ impl DisplayEngine {
         // initial cache prune
         self.prune_cache();
 
-        let tick_duration = parse_interval(&self.config.display.interval)
-            .unwrap_or(Duration::from_secs(1800));
+        let tick_duration =
+            parse_interval(&self.config.display.interval).unwrap_or(Duration::from_secs(1800));
 
         let mut timer = interval(tick_duration);
         timer.set_missed_tick_behavior(MissedTickBehavior::Skip);
@@ -250,7 +246,12 @@ impl DisplayEngine {
         }
 
         // find matching workspace config
-        if let Some(ws_config) = self.config.workspaces.iter().find(|w| w.workspace == workspace_id) {
+        if let Some(ws_config) = self
+            .config
+            .workspaces
+            .iter()
+            .find(|w| w.workspace == workspace_id)
+        {
             let wallpaper_key = &ws_config.wallpaper;
 
             // try to find by tag or ID

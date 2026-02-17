@@ -9,6 +9,12 @@ use super::WallpaperBackend;
 
 pub struct HyprpaperBackend;
 
+impl Default for HyprpaperBackend {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl HyprpaperBackend {
     pub fn new() -> Self {
         Self

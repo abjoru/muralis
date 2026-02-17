@@ -23,7 +23,12 @@ impl PexelsClient {
 
 #[async_trait]
 impl WallpaperSource for PexelsClient {
-    async fn search(&self, query: &str, page: u32, _aspect: AspectRatioFilter) -> Result<Vec<WallpaperPreview>> {
+    async fn search(
+        &self,
+        query: &str,
+        page: u32,
+        _aspect: AspectRatioFilter,
+    ) -> Result<Vec<WallpaperPreview>> {
         let resp: PexelsSearchResponse = self
             .client
             .get(format!("{API_BASE}/search"))
@@ -60,7 +65,13 @@ impl WallpaperSource for PexelsClient {
     }
 
     async fn download(&self, preview: &WallpaperPreview) -> Result<bytes::Bytes> {
-        let bytes = self.client.get(&preview.full_url).send().await?.bytes().await?;
+        let bytes = self
+            .client
+            .get(&preview.full_url)
+            .send()
+            .await?
+            .bytes()
+            .await?;
         Ok(bytes)
     }
 

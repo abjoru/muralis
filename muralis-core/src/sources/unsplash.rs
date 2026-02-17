@@ -23,7 +23,12 @@ impl UnsplashClient {
 
 #[async_trait]
 impl WallpaperSource for UnsplashClient {
-    async fn search(&self, query: &str, page: u32, _aspect: AspectRatioFilter) -> Result<Vec<WallpaperPreview>> {
+    async fn search(
+        &self,
+        query: &str,
+        page: u32,
+        _aspect: AspectRatioFilter,
+    ) -> Result<Vec<WallpaperPreview>> {
         let resp: UnsplashSearchResponse = self
             .client
             .get(format!("{API_BASE}/search/photos"))
@@ -57,7 +62,13 @@ impl WallpaperSource for UnsplashClient {
     }
 
     async fn download(&self, preview: &WallpaperPreview) -> Result<bytes::Bytes> {
-        let bytes = self.client.get(&preview.full_url).send().await?.bytes().await?;
+        let bytes = self
+            .client
+            .get(&preview.full_url)
+            .send()
+            .await?
+            .bytes()
+            .await?;
         Ok(bytes)
     }
 

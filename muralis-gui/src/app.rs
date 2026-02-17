@@ -827,7 +827,10 @@ async fn search_source(
 
     for source in &sources {
         if source.name() == source_name {
-            return source.search(query, page, aspect).await.map_err(|e| e.into());
+            return source
+                .search(query, page, aspect)
+                .await
+                .map_err(|e| e.into());
         }
     }
 

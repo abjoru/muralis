@@ -21,8 +21,10 @@ impl SwwwBackend {
         let mut cmd = Command::new("swww");
         cmd.arg("img").arg(path);
         cmd.arg("--transition-type").arg(&self.transition.r#type);
-        cmd.arg("--transition-duration").arg(self.transition.duration.to_string());
-        cmd.arg("--transition-fps").arg(self.transition.fps.to_string());
+        cmd.arg("--transition-duration")
+            .arg(self.transition.duration.to_string());
+        cmd.arg("--transition-fps")
+            .arg(self.transition.fps.to_string());
 
         if let Some(monitor) = output {
             cmd.arg("--outputs").arg(monitor);

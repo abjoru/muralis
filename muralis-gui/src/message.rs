@@ -41,6 +41,7 @@ pub enum Message {
     SearchSubmit,
     SearchResults(Tab, Vec<WallpaperPreview>),
     SearchError(String),
+    #[allow(dead_code)]
     SearchLoading(bool),
 
     // thumbnails
@@ -69,7 +70,9 @@ pub enum Message {
     DaemonStatusUpdate(Option<DaemonStatus>),
 
     // multi-select
+    #[allow(dead_code)]
     ToggleSelect(usize),
+    #[allow(dead_code)]
     RangeSelect(usize),
     ClearSelection,
     BatchFavorite,

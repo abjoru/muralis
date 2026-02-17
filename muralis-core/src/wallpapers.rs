@@ -166,7 +166,8 @@ impl WallpaperManager {
             .with_guessed_format()?
             .decode()?;
 
-        let thumb_height = (THUMBNAIL_WIDTH as f64 / img.width() as f64 * img.height() as f64) as u32;
+        let thumb_height =
+            (THUMBNAIL_WIDTH as f64 / img.width() as f64 * img.height() as f64) as u32;
         let thumb = img.resize_exact(THUMBNAIL_WIDTH, thumb_height, FilterType::Lanczos3);
 
         let thumb_path = self.thumbnail_path(hash);
@@ -231,11 +232,8 @@ mod tests {
         // create a tiny valid JPEG-like test image using the image crate
         let img = image::RgbImage::new(100, 100);
         let mut buf = Vec::new();
-        img.write_to(
-            &mut Cursor::new(&mut buf),
-            image::ImageFormat::Jpeg,
-        )
-        .unwrap();
+        img.write_to(&mut Cursor::new(&mut buf), image::ImageFormat::Jpeg)
+            .unwrap();
 
         let preview = WallpaperPreview {
             source_type: SourceType::Wallhaven,

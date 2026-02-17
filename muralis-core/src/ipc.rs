@@ -91,9 +91,7 @@ mod tests {
         let json = serde_json::to_string(&req).unwrap();
         assert_eq!(json, r#"{"command":"status"}"#);
 
-        let req = IpcRequest::SetWallpaper {
-            id: "abc".into(),
-        };
+        let req = IpcRequest::SetWallpaper { id: "abc".into() };
         let json = serde_json::to_string(&req).unwrap();
         assert!(json.contains(r#""command":"set_wallpaper""#));
         assert!(json.contains(r#""id":"abc""#));
@@ -107,7 +105,12 @@ mod tests {
 
         let json = r#"{"command":"set_mode","mode":"random"}"#;
         let req: IpcRequest = serde_json::from_str(json).unwrap();
-        assert!(matches!(req, IpcRequest::SetMode { mode: DisplayMode::Random }));
+        assert!(matches!(
+            req,
+            IpcRequest::SetMode {
+                mode: DisplayMode::Random
+            }
+        ));
     }
 
     #[test]
@@ -146,7 +149,9 @@ mod tests {
             IpcRequest::Next,
             IpcRequest::Prev,
             IpcRequest::SetWallpaper { id: "test".into() },
-            IpcRequest::SetMode { mode: DisplayMode::Workspace },
+            IpcRequest::SetMode {
+                mode: DisplayMode::Workspace,
+            },
             IpcRequest::Pause,
             IpcRequest::Resume,
             IpcRequest::Reload,

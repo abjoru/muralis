@@ -8,6 +8,7 @@ use muralis_core::models::Wallpaper;
 
 use crate::message::Message;
 
+#[allow(clippy::too_many_arguments)]
 pub fn view<'a>(
     wallpapers: &'a [Wallpaper],
     thumbnail_cache: &'a HashMap<String, ImageHandle>,
@@ -176,8 +177,11 @@ pub fn preview_content<'a>(
         );
     }
 
-    header_row =
-        header_row.push(button("Close").on_press(Message::ClosePreview).padding([4, 12]));
+    header_row = header_row.push(
+        button("Close")
+            .on_press(Message::ClosePreview)
+            .padding([4, 12]),
+    );
 
     let mut info = column![text(format!("Source: {}", wp.source_type)).size(14),].spacing(4);
 

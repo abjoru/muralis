@@ -133,10 +133,9 @@ impl Database {
     }
 
     pub fn delete_wallpaper(&self, id: &str) -> Result<bool> {
-        let count = self.conn.execute(
-            "DELETE FROM wallpapers WHERE id = ?1",
-            params![id],
-        )?;
+        let count = self
+            .conn
+            .execute("DELETE FROM wallpapers WHERE id = ?1", params![id])?;
         Ok(count > 0)
     }
 
@@ -150,11 +149,9 @@ impl Database {
     }
 
     pub fn wallpaper_count(&self) -> Result<u32> {
-        let count: u32 = self.conn.query_row(
-            "SELECT COUNT(*) FROM wallpapers",
-            [],
-            |row| row.get(0),
-        )?;
+        let count: u32 = self
+            .conn
+            .query_row("SELECT COUNT(*) FROM wallpapers", [], |row| row.get(0))?;
         Ok(count)
     }
 
@@ -201,7 +198,11 @@ impl Database {
         )?;
         let rows = stmt.query_map([], |row| {
             let source_str: String = row.get(1)?;
-            Ok((row.get::<_, String>(0)?, source_str, row.get::<_, String>(2)?))
+            Ok((
+                row.get::<_, String>(0)?,
+                source_str,
+                row.get::<_, String>(2)?,
+            ))
         })?;
         let mut entries = Vec::new();
         for row in rows {

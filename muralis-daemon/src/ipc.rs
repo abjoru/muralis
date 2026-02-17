@@ -81,7 +81,11 @@ async fn dispatch_request(
     match request {
         IpcRequest::Status => {
             let (tx, rx) = oneshot::channel();
-            if cmd_tx.send(DaemonCommand::Status { respond: tx }).await.is_err() {
+            if cmd_tx
+                .send(DaemonCommand::Status { respond: tx })
+                .await
+                .is_err()
+            {
                 return IpcResponse::error("engine unavailable");
             }
             match rx.await {

@@ -4,7 +4,7 @@ use crate::error::{MuralisError, Result};
 use crate::models::{BackendType, DisplayMode};
 use crate::paths::MuralisPaths;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
     pub general: GeneralConfig,
@@ -17,25 +17,11 @@ pub struct Config {
     pub filter: FilterConfig,
 }
 
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            general: GeneralConfig::default(),
-            display: DisplayConfig::default(),
-            sources: SourcesConfig::default(),
-            workspaces: Vec::new(),
-            schedules: Vec::new(),
-            filter: FilterConfig::default(),
-        }
-    }
-}
-
 impl Config {
     pub fn load(paths: &MuralisPaths) -> Result<Self> {
         let path = paths.config_file();
-        let content = std::fs::read_to_string(&path).map_err(|e| {
-            MuralisError::Config(format!("failed to read {}: {e}", path.display()))
-        })?;
+        let content = std::fs::read_to_string(&path)
+            .map_err(|e| MuralisError::Config(format!("failed to read {}: {e}", path.display())))?;
         let config: Self = toml::from_str(&content)?;
         Ok(config)
     }
@@ -131,7 +117,7 @@ impl Default for FilterConfig {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct SourcesConfig {
     pub wallhaven: WallhavenConfig,
@@ -139,17 +125,6 @@ pub struct SourcesConfig {
     pub pexels: PexelsConfig,
     #[serde(default)]
     pub feeds: Vec<FeedConfig>,
-}
-
-impl Default for SourcesConfig {
-    fn default() -> Self {
-        Self {
-            wallhaven: WallhavenConfig::default(),
-            unsplash: UnsplashConfig::default(),
-            pexels: PexelsConfig::default(),
-            feeds: Vec::new(),
-        }
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -172,36 +147,18 @@ impl Default for WallhavenConfig {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct UnsplashConfig {
     pub enabled: bool,
     pub access_key: Option<String>,
 }
 
-impl Default for UnsplashConfig {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            access_key: None,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct PexelsConfig {
     pub enabled: bool,
     pub api_key: Option<String>,
-}
-
-impl Default for PexelsConfig {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            api_key: None,
-        }
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -296,7 +253,10 @@ tags = ["bright", "morning"]
         let config: Config = toml::from_str(toml_str).unwrap();
         assert_eq!(config.general.cache_max_mb, 1000);
         assert_eq!(config.display.transition.r#type, "wipe");
-        assert_eq!(config.sources.wallhaven.api_key.as_deref(), Some("test_key"));
+        assert_eq!(
+            config.sources.wallhaven.api_key.as_deref(),
+            Some("test_key")
+        );
         assert_eq!(config.sources.feeds.len(), 1);
         assert_eq!(config.workspaces.len(), 1);
         assert_eq!(config.schedules.len(), 1);

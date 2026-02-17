@@ -11,14 +11,13 @@ pub fn parse_interval(s: &str) -> Option<Duration> {
         return None;
     }
 
-    let (num_str, suffix) = if s.ends_with('s') {
-        (&s[..s.len() - 1], 's')
-    } else if s.ends_with('m') {
-        (&s[..s.len() - 1], 'm')
-    } else if s.ends_with('h') {
-        (&s[..s.len() - 1], 'h')
+    let (num_str, suffix) = if let Some(n) = s.strip_suffix('s') {
+        (n, 's')
+    } else if let Some(n) = s.strip_suffix('m') {
+        (n, 'm')
+    } else if let Some(n) = s.strip_suffix('h') {
+        (n, 'h')
     } else {
-        // default to seconds if no suffix
         (s, 's')
     };
 

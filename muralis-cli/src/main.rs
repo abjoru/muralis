@@ -87,9 +87,7 @@ async fn main() -> Result<()> {
             print_response(resp);
         }
         Commands::Mode { mode } => {
-            let display_mode: DisplayMode = mode
-                .parse()
-                .map_err(|e: String| anyhow::anyhow!(e))?;
+            let display_mode: DisplayMode = mode.parse().map_err(|e: String| anyhow::anyhow!(e))?;
             let resp = send(IpcRequest::SetMode { mode: display_mode }).await?;
             print_response(resp);
         }
@@ -110,8 +108,16 @@ async fn main() -> Result<()> {
             match action {
                 CacheAction::Stats => {
                     let stats = muralis_core::cache::cache_stats(&paths);
-                    println!("thumbnails: {} ({} files)", format_bytes(stats.thumbnails_size), stats.thumbnail_count);
-                    println!("previews:   {} ({} files)", format_bytes(stats.previews_size), stats.preview_count);
+                    println!(
+                        "thumbnails: {} ({} files)",
+                        format_bytes(stats.thumbnails_size),
+                        stats.thumbnail_count
+                    );
+                    println!(
+                        "previews:   {} ({} files)",
+                        format_bytes(stats.previews_size),
+                        stats.preview_count
+                    );
                     println!("total:      {}", format_bytes(stats.total_size));
                 }
                 CacheAction::Prune => {
@@ -153,15 +159,18 @@ async fn main() -> Result<()> {
 }
 
 async fn send(request: IpcRequest) -> Result<IpcResponse> {
-    ipc::send_request(&request).await.map_err(|e| {
-        anyhow::anyhow!("daemon not running. start with: muralis-daemon\n  ({e})")
-    })
+    ipc::send_request(&request)
+        .await
+        .map_err(|e| anyhow::anyhow!("daemon not running. start with: muralis-daemon\n  ({e})"))
 }
 
 fn print_response(resp: IpcResponse) {
     match resp {
         IpcResponse::Ok { data: Some(data) } => {
-            println!("{}", serde_json::to_string_pretty(&data).unwrap_or_default());
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&data).unwrap_or_default()
+            );
         }
         IpcResponse::Ok { data: None } => {
             println!("ok");
