@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use ksni::blocking::TrayMethods;
 use tokio::sync::mpsc;
 use tracing::{info, warn};
@@ -6,9 +8,14 @@ use muralis_core::models::DisplayMode;
 
 use crate::display::DaemonCommand;
 
+const TRAY_STARTUP_DELAY: Duration = Duration::from_secs(3);
+const TRAY_RETRIES: u32 = 3;
+const TRAY_RETRY_DELAY: Duration = Duration::from_secs(2);
+
 struct MuralisTray {
     cmd_tx: mpsc::Sender<DaemonCommand>,
     gui: Option<std::process::Child>,
+    icon_theme_path: String,
 }
 
 impl MuralisTray {
@@ -24,6 +31,10 @@ impl ksni::Tray for MuralisTray {
 
     fn icon_name(&self) -> String {
         "muralis".into()
+    }
+
+    fn icon_theme_path(&self) -> String {
+        self.icon_theme_path.clone()
     }
 
     fn title(&self) -> String {
@@ -132,17 +143,39 @@ impl ksni::Tray for MuralisTray {
 }
 
 pub fn spawn_tray(cmd_tx: mpsc::Sender<DaemonCommand>) {
+    let icon_theme_path = std::env::var("XDG_DATA_HOME")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| {
+            let home = std::env::var("HOME").unwrap_or_default();
+            std::path::PathBuf::from(home).join(".local/share")
+        })
+        .join("icons")
+        .to_string_lossy()
+        .into_owned();
+
     std::thread::spawn(move || {
-        let tray = MuralisTray { cmd_tx, gui: None };
-        match tray.spawn() {
-            Ok(_handle) => {
-                info!("tray spawned");
-                // keep thread alive to maintain tray
-                loop {
-                    std::thread::park();
+        // delay to let SNI host (waybar/ags) initialize first
+        std::thread::sleep(TRAY_STARTUP_DELAY);
+
+        for attempt in 1..=TRAY_RETRIES {
+            let tray = MuralisTray {
+                cmd_tx: cmd_tx.clone(),
+                gui: None,
+                icon_theme_path: icon_theme_path.clone(),
+            };
+            match tray.spawn() {
+                Ok(_handle) => {
+                    info!("tray spawned");
+                    loop {
+                        std::thread::park();
+                    }
                 }
+                Err(e) if attempt < TRAY_RETRIES => {
+                    warn!("tray attempt {attempt}/{TRAY_RETRIES} failed: {e}");
+                    std::thread::sleep(TRAY_RETRY_DELAY);
+                }
+                Err(e) => warn!("tray failed after {TRAY_RETRIES} attempts: {e}"),
             }
-            Err(e) => warn!("tray error: {e}"),
         }
     });
 }
