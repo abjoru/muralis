@@ -3,3 +3,5 @@
 *.swo
 .env
 REQUIREMENTS.md
+CLAUDE.md
+.claude/
