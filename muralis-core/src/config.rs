@@ -68,6 +68,7 @@ impl Config {
 pub struct GeneralConfig {
     pub backend: BackendType,
     pub cache_max_mb: u64,
+    pub thumbnail_zoom: f32,
 }
 
 impl Default for GeneralConfig {
@@ -75,6 +76,7 @@ impl Default for GeneralConfig {
         Self {
             backend: BackendType::Hyprpaper,
             cache_max_mb: 500,
+            thumbnail_zoom: 1.0,
         }
     }
 }

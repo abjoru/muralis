@@ -27,20 +27,30 @@ impl AspectRatioFilter {
         Self::Ratio3x2,
     ];
 
+    pub fn ratio_pair(self) -> Option<(u32, u32)> {
+        match self {
+            Self::All => None,
+            Self::Ratio16x9 => Some((16, 9)),
+            Self::Ratio21x9 => Some((21, 9)),
+            Self::Ratio32x9 => Some((32, 9)),
+            Self::Ratio16x10 => Some((16, 10)),
+            Self::Ratio4x3 => Some((4, 3)),
+            Self::Ratio3x2 => Some((3, 2)),
+        }
+    }
+
+    pub fn ratio_value(&self) -> Option<f64> {
+        self.ratio_pair().map(|(w, h)| w as f64 / h as f64)
+    }
+
     pub fn matches(self, width: u32, height: u32) -> bool {
-        if self == Self::All || width == 0 || height == 0 {
+        let Some(target) = self.ratio_value() else {
+            return true;
+        };
+        if width == 0 || height == 0 {
             return true;
         }
         let ratio = width as f64 / height as f64;
-        let target = match self {
-            Self::Ratio16x9 => 16.0 / 9.0,
-            Self::Ratio21x9 => 21.0 / 9.0,
-            Self::Ratio32x9 => 32.0 / 9.0,
-            Self::Ratio16x10 => 16.0 / 10.0,
-            Self::Ratio4x3 => 4.0 / 3.0,
-            Self::Ratio3x2 => 3.0 / 2.0,
-            Self::All => unreachable!(),
-        };
         (ratio - target).abs() < 0.1
     }
 
@@ -49,23 +59,17 @@ impl AspectRatioFilter {
             return Self::All;
         }
         let ratio = w as f64 / h as f64;
-        let candidates = [
-            (Self::Ratio16x9, 16.0 / 9.0),
-            (Self::Ratio21x9, 21.0 / 9.0),
-            (Self::Ratio32x9, 32.0 / 9.0),
-            (Self::Ratio16x10, 16.0 / 10.0),
-            (Self::Ratio4x3, 4.0 / 3.0),
-            (Self::Ratio3x2, 3.0 / 2.0),
-        ];
-        candidates
+        Self::ALL
             .iter()
+            .copied()
+            .filter_map(|f| f.ratio_pair().map(|(rw, rh)| (f, rw as f64 / rh as f64)))
             .min_by(|a, b| {
                 (ratio - a.1)
                     .abs()
                     .partial_cmp(&(ratio - b.1).abs())
                     .unwrap()
             })
-            .map(|(v, _)| *v)
+            .map(|(v, _)| v)
             .unwrap_or(Self::All)
     }
 

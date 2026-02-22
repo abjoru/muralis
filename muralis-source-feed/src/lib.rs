@@ -14,7 +14,10 @@ pub struct FeedConfig {
     pub enabled: bool,
 }
 
-pub fn create_sources(table: &toml::Table) -> Vec<Box<dyn WallpaperSource>> {
+pub fn create_sources(
+    table: &toml::Table,
+    client: reqwest::Client,
+) -> Vec<Box<dyn WallpaperSource>> {
     let Some(val) = table.get("feeds") else {
         return Vec::new();
     };
@@ -31,7 +34,10 @@ pub fn create_sources(table: &toml::Table) -> Vec<Box<dyn WallpaperSource>> {
             }
         };
         if config.enabled {
-            sources.push(Box::new(FeedSource::new(config)));
+            sources.push(Box::new(FeedSource {
+                config,
+                client: client.clone(),
+            }));
         }
     }
     sources
@@ -40,18 +46,6 @@ pub fn create_sources(table: &toml::Table) -> Vec<Box<dyn WallpaperSource>> {
 pub struct FeedSource {
     config: FeedConfig,
     client: reqwest::Client,
-}
-
-impl FeedSource {
-    pub fn new(config: FeedConfig) -> Self {
-        Self {
-            config,
-            client: reqwest::Client::builder()
-                .user_agent("muralis/0.1")
-                .build()
-                .unwrap_or_default(),
-        }
-    }
 }
 
 #[async_trait]

@@ -1,28 +1,21 @@
 use std::collections::{HashMap, HashSet};
 
 use iced::widget::image::Handle as ImageHandle;
-use iced::widget::{button, column, container, row, scrollable, text, Image, Space};
+use iced::widget::{button, column, container, row, scrollable, slider, text, Image, Space};
 use iced::{Element, Length};
 
 use muralis_core::models::Wallpaper;
 
 use crate::message::Message;
 
-#[allow(clippy::too_many_arguments)]
 pub fn view<'a>(
     wallpapers: &'a [Wallpaper],
     thumbnail_cache: &'a HashMap<String, ImageHandle>,
     selected_index: Option<usize>,
-    _preview_handle: &'a Option<ImageHandle>,
-    _preview_loading: bool,
     multi_selected: &'a HashSet<usize>,
-    _crop_overlay_active: bool,
-    _crop_overlay_handle: &'a Option<ImageHandle>,
-    _crop_needed: bool,
+    thumbnail_zoom: f32,
 ) -> Element<'a, Message> {
-    let filtered: Vec<(usize, &Wallpaper)> = wallpapers.iter().enumerate().collect();
-
-    if filtered.is_empty() {
+    if wallpapers.is_empty() {
         return container(text(
             "No favorites yet. Search for wallpapers and add some!",
         ))
@@ -32,21 +25,27 @@ pub fn view<'a>(
         .into();
     }
 
-    let thumb_w: f32 = 220.0;
-    let cells: Vec<Element<'a, Message>> = filtered
+    let thumb_w: f32 = 220.0 * thumbnail_zoom;
+    let cells: Vec<Element<'a, Message>> = wallpapers
         .iter()
-        .map(|(orig_idx, wp)| {
-            let idx = *orig_idx;
+        .enumerate()
+        .map(|(idx, wp)| {
             let is_selected = selected_index == Some(idx);
+            let thumb_h = if wp.width > 0 && wp.height > 0 {
+                thumb_w * wp.height as f32 / wp.width as f32
+            } else {
+                thumb_w * 9.0 / 16.0
+            };
             let thumb: Element<'a, Message> = if let Some(handle) = thumbnail_cache.get(&wp.id) {
                 Image::new(handle.clone())
                     .width(thumb_w)
+                    .height(thumb_h)
                     .content_fit(iced::ContentFit::Contain)
                     .into()
             } else {
                 container(text("Loading..."))
                     .width(thumb_w)
-                    .height(180)
+                    .height(thumb_h)
                     .center(Length::Fill)
                     .style(container::bordered_box)
                     .into()
@@ -71,6 +70,17 @@ pub fn view<'a>(
         .width(Length::Fill)
         .height(Length::Fill);
 
+    let bottom_bar = row![
+        text("Zoom").size(12),
+        slider(0.5..=2.5, thumbnail_zoom, Message::ZoomChanged)
+            .step(0.1)
+            .width(80),
+        Space::new().width(Length::Fill),
+    ]
+    .spacing(8)
+    .padding([6, 16])
+    .align_y(iced::Alignment::Center);
+
     let mut left_col: iced::widget::Column<'a, Message> = column![];
 
     if !multi_selected.is_empty() {
@@ -90,6 +100,7 @@ pub fn view<'a>(
     }
 
     left_col = left_col.push(grid);
+    left_col = left_col.push(bottom_bar);
 
     left_col.width(Length::Fill).height(Length::Fill).into()
 }

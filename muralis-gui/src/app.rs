@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -18,25 +18,18 @@ use muralis_core::wallpapers::WallpaperManager;
 use crate::message::{AspectRatioFilter, Message, Tab};
 use crate::views;
 
-fn http_client() -> reqwest::Client {
-    reqwest::Client::builder()
-        .timeout(Duration::from_secs(30))
-        .build()
-        .unwrap_or_default()
-}
-
-fn build_registry(sources: &toml::Table) -> SourceRegistry {
+fn build_registry(sources: &toml::Table, client: &reqwest::Client) -> SourceRegistry {
     let mut registry = SourceRegistry::new();
-    for s in muralis_source_wallhaven::create_sources(sources) {
+    for s in muralis_source_wallhaven::create_sources(sources, client.clone()) {
         registry.register(s);
     }
-    for s in muralis_source_unsplash::create_sources(sources) {
+    for s in muralis_source_unsplash::create_sources(sources, client.clone()) {
         registry.register(s);
     }
-    for s in muralis_source_pexels::create_sources(sources) {
+    for s in muralis_source_pexels::create_sources(sources, client.clone()) {
         registry.register(s);
     }
-    for s in muralis_source_feed::create_sources(sources) {
+    for s in muralis_source_feed::create_sources(sources, client.clone()) {
         registry.register(s);
     }
     registry
@@ -46,12 +39,15 @@ pub struct App {
     active_tab: Tab,
     search_query: String,
     current_page: u32,
+    page_input_str: String,
     loading: bool,
     favorites: Vec<Wallpaper>,
     source_names: Vec<String>,
     source_results: HashMap<String, Vec<WallpaperPreview>>,
     registry: Arc<SourceRegistry>,
+    http: reqwest::Client,
     thumbnail_cache: HashMap<String, ImageHandle>,
+    thumbnail_order: VecDeque<String>,
     selected_index: Option<usize>,
     multi_selected: HashSet<usize>,
     select_anchor: Option<usize>,
@@ -65,6 +61,8 @@ pub struct App {
     crop_overlay_handle: Option<ImageHandle>,
     daemon_status: Option<DaemonStatus>,
     error_message: Option<String>,
+    thumbnail_zoom: f32,
+    zoom_generation: u32,
     settings_open: bool,
     config: Config,
     paths: MuralisPaths,
@@ -77,20 +75,31 @@ impl App {
         let _ = paths.install_icon();
         let config = Config::load_or_default(&paths);
 
-        let registry = build_registry(&config.sources);
+        let http = reqwest::Client::builder()
+            .timeout(Duration::from_secs(30))
+            .user_agent("muralis/0.1")
+            .build()
+            .unwrap_or_default();
+
+        let registry = build_registry(&config.sources, &http);
         let source_names: Vec<String> = registry.names().into_iter().map(String::from).collect();
         let registry = Arc::new(registry);
+
+        let thumbnail_zoom = config.general.thumbnail_zoom.clamp(0.5, 2.5);
 
         let app = Self {
             active_tab: Tab::Favorites,
             search_query: String::new(),
             current_page: 1,
+            page_input_str: "1".into(),
             loading: false,
             favorites: Vec::new(),
             source_names,
             source_results: HashMap::new(),
             registry,
+            http,
             thumbnail_cache: HashMap::new(),
+            thumbnail_order: VecDeque::new(),
             selected_index: None,
             multi_selected: HashSet::new(),
             select_anchor: None,
@@ -104,12 +113,15 @@ impl App {
             crop_overlay_handle: None,
             daemon_status: None,
             error_message: None,
+            thumbnail_zoom,
+            zoom_generation: 0,
             settings_open: false,
             config,
             paths,
         };
 
-        let load = Task::perform(load_favorites(), |result| match result {
+        let p = app.paths.clone();
+        let load = Task::perform(load_favorites(p), |result| match result {
             Ok(wps) => Message::FavoritesLoaded(wps),
             Err(e) => Message::Error(e.to_string()),
         });
@@ -126,12 +138,42 @@ impl App {
         let (w, h) = self.window_size;
         let padding = 16.0;
         let spacing = 8.0;
-        let thumb_w = 220.0;
-        let thumb_h = 160.0;
+        let thumb_w = 220.0 * self.thumbnail_zoom;
+        let thumb_h = match self.aspect_ratio_filter.ratio_value() {
+            Some(r) => thumb_w / r as f32,
+            None => thumb_w * 9.0 / 16.0,
+        };
         let chrome = 120.0; // tab bar + search bar + pagination
         let cols = ((w - 2.0 * padding) / (thumb_w + spacing)).floor().max(1.0);
         let rows = ((h - chrome) / (thumb_h + spacing)).floor().max(1.0);
         (cols * rows) as u32
+    }
+
+    fn clear_preview(&mut self) {
+        self.selected_index = None;
+        self.preview_handle = None;
+        self.preview_loading = false;
+        self.preview_bytes = None;
+        self.crop_overlay_handle = None;
+    }
+
+    fn clear_selection(&mut self) {
+        self.multi_selected.clear();
+        self.select_anchor = None;
+    }
+
+    fn cache_thumbnail(&mut self, id: String, handle: ImageHandle) {
+        if !self.thumbnail_cache.contains_key(&id) {
+            self.thumbnail_order.push_back(id.clone());
+        }
+        self.thumbnail_cache.insert(id, handle);
+        while self.thumbnail_cache.len() > 500 {
+            if let Some(old) = self.thumbnail_order.pop_front() {
+                self.thumbnail_cache.remove(&old);
+            } else {
+                break;
+            }
+        }
     }
 
     pub fn theme(&self) -> Theme {
@@ -173,15 +215,11 @@ impl App {
         match message {
             Message::TabSelected(tab) => {
                 self.active_tab = tab;
-                self.selected_index = None;
-                self.multi_selected.clear();
-                self.select_anchor = None;
-                self.preview_handle = None;
-                self.preview_loading = false;
-                self.preview_bytes = None;
-                self.crop_overlay_handle = None;
+                self.clear_preview();
+                self.clear_selection();
                 if self.active_tab == Tab::Favorites {
-                    return Task::perform(load_favorites(), |result| match result {
+                    let p = self.paths.clone();
+                    return Task::perform(load_favorites(p), |result| match result {
                         Ok(wps) => Message::FavoritesLoaded(wps),
                         Err(e) => Message::Error(e.to_string()),
                     });
@@ -226,7 +264,12 @@ impl App {
 
             Message::SearchResults(tab, results) => {
                 self.loading = false;
-                let client = http_client();
+                if results.is_empty() && self.current_page > 1 {
+                    self.current_page -= 1;
+                    self.page_input_str = self.current_page.to_string();
+                    return Task::none();
+                }
+                let client = self.http.clone();
                 let tasks: Vec<Task<Message>> = results
                     .iter()
                     .filter(|p| !self.thumbnail_cache.contains_key(&p.source_id))
@@ -250,45 +293,33 @@ impl App {
                 if let Tab::Source(name) = tab {
                     self.source_results.insert(name, results);
                 }
-                self.selected_index = None;
-                self.preview_handle = None;
-                self.preview_bytes = None;
-                self.crop_overlay_handle = None;
+                self.clear_preview();
+                self.clear_selection();
 
                 Task::batch(tasks)
             }
 
             Message::SearchError(err) => {
                 self.loading = false;
-                self.error_message = Some(err.clone());
                 tracing::warn!("search error: {err}");
+                self.error_message = Some(err);
                 Task::none()
             }
 
             Message::ClosePreview => {
-                self.selected_index = None;
-                self.preview_handle = None;
-                self.preview_loading = false;
-                self.preview_bytes = None;
-                self.crop_overlay_handle = None;
+                self.clear_preview();
                 Task::none()
             }
 
             Message::ThumbnailClicked(idx) => {
                 if self.selected_index == Some(idx) {
-                    self.selected_index = None;
-                    self.preview_handle = None;
-                    self.preview_loading = false;
-                    self.preview_bytes = None;
-                    self.crop_overlay_handle = None;
+                    self.clear_preview();
                     return Task::none();
                 }
 
+                self.clear_preview();
                 self.selected_index = Some(idx);
-                self.preview_handle = None;
                 self.preview_loading = true;
-                self.preview_bytes = None;
-                self.crop_overlay_handle = None;
 
                 let url = match &self.active_tab {
                     Tab::Favorites => self.favorites.get(idx).map(|wp| wp.file_path.clone()),
@@ -308,7 +339,7 @@ impl App {
                             }
                         })
                     } else {
-                        let client = http_client();
+                        let client = self.http.clone();
                         Task::perform(
                             async move {
                                 let resp = client.get(&url).send().await?;
@@ -337,28 +368,27 @@ impl App {
             }
 
             Message::ThumbnailLoaded(id, bytes) => {
-                self.thumbnail_cache
-                    .insert(id, ImageHandle::from_bytes(bytes));
+                self.cache_thumbnail(id, ImageHandle::from_bytes(bytes));
                 Task::none()
             }
 
             Message::PreviewLoaded(bytes) => {
                 self.preview_loading = false;
                 self.preview_handle = Some(ImageHandle::from_bytes(bytes.clone()));
+                self.preview_bytes = Some(bytes);
 
                 let (img_w, img_h) = self.selected_image_dimensions();
                 let (mon_w, mon_h) = self.monitor_dims;
 
                 if crop_overlay::ratios_match(img_w, img_h, mon_w, mon_h, 0.01) {
-                    self.preview_bytes = Some(bytes);
                     return Task::none();
                 }
 
-                self.preview_bytes = Some(bytes.clone());
+                let overlay_bytes = self.preview_bytes.as_ref().unwrap().clone();
                 Task::perform(
                     async move {
                         tokio::task::spawn_blocking(move || {
-                            crop_overlay::generate_crop_overlay(&bytes, mon_w, mon_h, 0.3)
+                            crop_overlay::generate_crop_overlay(&overlay_bytes, mon_w, mon_h, 0.3)
                         })
                         .await
                         .map_err(|e| anyhow::anyhow!(e))?
@@ -375,7 +405,7 @@ impl App {
 
             Message::Favorite(preview) => {
                 let paths = self.paths.clone();
-                let client = http_client();
+                let client = self.http.clone();
                 Task::perform(
                     async move {
                         let data = client.get(&preview.full_url).send().await?.bytes().await?;
@@ -395,10 +425,13 @@ impl App {
                 )
             }
 
-            Message::Favorited(_id) => Task::perform(load_favorites(), |result| match result {
-                Ok(wps) => Message::FavoritesLoaded(wps),
-                Err(e) => Message::Error(e.to_string()),
-            }),
+            Message::Favorited(_id) => {
+                let p = self.paths.clone();
+                Task::perform(load_favorites(p), |result| match result {
+                    Ok(wps) => Message::FavoritesLoaded(wps),
+                    Err(e) => Message::Error(e.to_string()),
+                })
+            }
 
             Message::Unfavorite(id) => {
                 let paths = self.paths.clone();
@@ -422,11 +455,9 @@ impl App {
             }
 
             Message::Unfavorited(_id) => {
-                self.selected_index = None;
-                self.preview_handle = None;
-                self.preview_bytes = None;
-                self.crop_overlay_handle = None;
-                Task::perform(load_favorites(), |result| match result {
+                self.clear_preview();
+                let p = self.paths.clone();
+                Task::perform(load_favorites(p), |result| match result {
                     Ok(wps) => Message::FavoritesLoaded(wps),
                     Err(e) => Message::Error(e.to_string()),
                 })
@@ -524,15 +555,14 @@ impl App {
             }
 
             Message::ClearSelection => {
-                self.multi_selected.clear();
-                self.select_anchor = None;
+                self.clear_selection();
                 Task::none()
             }
 
             Message::BatchFavorite => {
                 let results = self.active_source_results();
                 let indices: Vec<usize> = self.multi_selected.iter().copied().collect();
-                let client = http_client();
+                let client = self.http.clone();
                 let tasks: Vec<Task<Message>> = indices
                     .into_iter()
                     .filter_map(|i| results.get(i).cloned())
@@ -559,8 +589,7 @@ impl App {
                         )
                     })
                     .collect();
-                self.multi_selected.clear();
-                self.select_anchor = None;
+                self.clear_selection();
                 Task::batch(tasks)
             }
 
@@ -589,8 +618,7 @@ impl App {
                         )
                     })
                     .collect();
-                self.multi_selected.clear();
-                self.select_anchor = None;
+                self.clear_selection();
                 Task::batch(tasks)
             }
 
@@ -620,31 +648,46 @@ impl App {
                         )
                     })
                     .collect();
-                self.multi_selected.clear();
-                self.select_anchor = None;
+                self.clear_selection();
                 Task::batch(tasks)
             }
 
             Message::NextPage => {
                 self.current_page += 1;
+                self.page_input_str = self.current_page.to_string();
                 self.update(Message::SearchSubmit)
             }
 
             Message::PrevPage => {
                 if self.current_page > 1 {
                     self.current_page -= 1;
+                    self.page_input_str = self.current_page.to_string();
                     self.update(Message::SearchSubmit)
                 } else {
                     Task::none()
                 }
             }
 
+            Message::PageInputChanged(s) => {
+                self.page_input_str = s.chars().filter(|c| c.is_ascii_digit()).collect();
+                Task::none()
+            }
+
+            Message::PageInputSubmit => {
+                if let Ok(n) = self.page_input_str.parse::<u32>() {
+                    if n >= 1 {
+                        self.current_page = n;
+                        self.page_input_str = self.current_page.to_string();
+                        return self.update(Message::SearchSubmit);
+                    }
+                }
+                self.page_input_str = self.current_page.to_string();
+                Task::none()
+            }
+
             Message::AspectFilterChanged(filter) => {
                 self.aspect_ratio_filter = filter;
-                self.selected_index = None;
-                self.preview_handle = None;
-                self.preview_bytes = None;
-                self.crop_overlay_handle = None;
+                self.clear_preview();
                 Task::none()
             }
 
@@ -667,10 +710,7 @@ impl App {
             Message::ToggleSettings => {
                 self.settings_open = !self.settings_open;
                 if self.settings_open {
-                    self.selected_index = None;
-                    self.preview_handle = None;
-                    self.preview_bytes = None;
-                    self.crop_overlay_handle = None;
+                    self.clear_preview();
                 }
                 Task::none()
             }
@@ -683,7 +723,7 @@ impl App {
                     async move { save_config(config, paths).await },
                     |result| match result {
                         Ok(()) => Message::ConfigSaved,
-                        Err(e) => Message::ConfigSaveError(e),
+                        Err(e) => Message::Error(e.to_string()),
                     },
                 )];
                 if self.daemon_status.is_some() {
@@ -703,7 +743,7 @@ impl App {
                     async move { save_config(config, paths).await },
                     |result| match result {
                         Ok(()) => Message::ConfigSaved,
-                        Err(e) => Message::ConfigSaveError(e),
+                        Err(e) => Message::Error(e.to_string()),
                     },
                 )
             }
@@ -716,7 +756,7 @@ impl App {
                     async move { save_config(config, paths).await },
                     |result| match result {
                         Ok(()) => Message::ConfigSaved,
-                        Err(e) => Message::ConfigSaveError(e),
+                        Err(e) => Message::Error(e.to_string()),
                     },
                 )];
                 if self.daemon_status.is_some() {
@@ -763,9 +803,33 @@ impl App {
 
             Message::ConfigSaved => Task::none(),
 
-            Message::ConfigSaveError(e) => {
-                self.error_message = Some(e);
-                Task::none()
+            Message::ZoomChanged(zoom) => {
+                self.thumbnail_zoom = zoom.clamp(0.5, 2.5);
+                self.config.general.thumbnail_zoom = self.thumbnail_zoom;
+                self.zoom_generation += 1;
+                let gen = self.zoom_generation;
+                Task::perform(
+                    async move {
+                        tokio::time::sleep(Duration::from_millis(500)).await;
+                        gen
+                    },
+                    Message::ZoomSave,
+                )
+            }
+
+            Message::ZoomSave(gen) => {
+                if gen == self.zoom_generation {
+                    let config = self.config.clone();
+                    let paths = self.paths.clone();
+                    Task::perform(async move { save_config(config, paths).await }, |result| {
+                        match result {
+                            Ok(()) => Message::ConfigSaved,
+                            Err(e) => Message::Error(e.to_string()),
+                        }
+                    })
+                } else {
+                    Task::none()
+                }
             }
 
             Message::WindowResized(w, h) => {
@@ -776,8 +840,8 @@ impl App {
             Message::Error(err) => {
                 self.loading = false;
                 self.preview_loading = false;
-                self.error_message = Some(err.clone());
                 tracing::error!("error: {err}");
+                self.error_message = Some(err);
                 Task::none()
             }
 
@@ -896,12 +960,8 @@ impl App {
                         &self.favorites,
                         &self.thumbnail_cache,
                         self.selected_index,
-                        &self.preview_handle,
-                        self.preview_loading,
                         &self.multi_selected,
-                        self.crop_overlay_active,
-                        &self.crop_overlay_handle,
-                        crop_needed,
+                        self.thumbnail_zoom,
                     );
                     let preview = views::favorites::preview_content(
                         &self.favorites,
@@ -926,16 +986,13 @@ impl App {
                         results,
                         &self.thumbnail_cache,
                         self.selected_index,
-                        &self.preview_handle,
-                        self.preview_loading,
                         self.loading,
                         self.current_page,
+                        &self.page_input_str,
                         &self.multi_selected,
-                        self.crop_overlay_active,
-                        &self.crop_overlay_handle,
-                        crop_needed,
                         self.aspect_ratio_filter,
                         is_feed,
+                        self.thumbnail_zoom,
                     );
                     let preview = views::source_tab::preview_content(
                         results,
@@ -978,9 +1035,8 @@ impl App {
     }
 }
 
-async fn load_favorites() -> anyhow::Result<Vec<Wallpaper>> {
-    tokio::task::spawn_blocking(|| {
-        let paths = MuralisPaths::new()?;
+async fn load_favorites(paths: MuralisPaths) -> anyhow::Result<Vec<Wallpaper>> {
+    tokio::task::spawn_blocking(move || {
         let db = Database::open(&paths.db_path())?;
         let wps = db.list_wallpapers()?;
         Ok(wps)
@@ -1005,11 +1061,11 @@ async fn search_source(
         .map_err(|e| e.into())
 }
 
-async fn save_config(config: Config, paths: MuralisPaths) -> Result<(), String> {
+async fn save_config(config: Config, paths: MuralisPaths) -> anyhow::Result<()> {
     tokio::task::spawn_blocking(move || config.save(&paths))
         .await
-        .map_err(|e| e.to_string())?
-        .map_err(|e| e.to_string())
+        .map_err(|e| anyhow::anyhow!(e))?
+        .map_err(|e| anyhow::anyhow!(e))
 }
 
 async fn detect_monitors() -> Option<(u32, u32)> {

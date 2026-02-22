@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 
 use iced::widget::image::Handle as ImageHandle;
 use iced::widget::{
-    button, column, container, pick_list, row, scrollable, text, text_input, Image, Space,
+    button, column, container, pick_list, row, scrollable, slider, text, text_input, Image, Space,
 };
 use iced::{Element, Length};
 
@@ -16,16 +16,13 @@ pub fn view<'a>(
     results: &'a [WallpaperPreview],
     thumbnail_cache: &'a HashMap<String, ImageHandle>,
     selected_index: Option<usize>,
-    _preview_handle: &'a Option<ImageHandle>,
-    _preview_loading: bool,
     search_loading: bool,
     current_page: u32,
+    page_input_str: &'a str,
     multi_selected: &'a HashSet<usize>,
-    _crop_overlay_active: bool,
-    _crop_overlay_handle: &'a Option<ImageHandle>,
-    _crop_needed: bool,
     aspect_filter: AspectRatioFilter,
     is_feed: bool,
+    thumbnail_zoom: f32,
 ) -> Element<'a, Message> {
     let search_bar = row![
         text_input("Search wallpapers...", search_query)
@@ -65,7 +62,9 @@ pub fn view<'a>(
             .height(Length::Fill)
             .into()
     } else if filtered.is_empty() {
-        let msg = if is_feed {
+        let msg = if !results.is_empty() {
+            "No results match the selected aspect ratio"
+        } else if is_feed {
             "No wallpapers found"
         } else {
             "Enter a search query to find wallpapers"
@@ -76,7 +75,8 @@ pub fn view<'a>(
             .height(Length::Fill)
             .into()
     } else {
-        let thumb_w: f32 = 220.0;
+        let thumb_w: f32 = 220.0 * thumbnail_zoom;
+        let aspect_height = aspect_filter.ratio_value().map(|r| thumb_w / r as f32);
         let cells: Vec<Element<'a, Message>> = filtered
             .iter()
             .map(|(orig_idx, preview)| {
@@ -85,14 +85,17 @@ pub fn view<'a>(
 
                 let thumb: Element<'a, Message> =
                     if let Some(handle) = thumbnail_cache.get(&preview.source_id) {
-                        Image::new(handle.clone())
+                        let mut img = Image::new(handle.clone())
                             .width(thumb_w)
-                            .content_fit(iced::ContentFit::Contain)
-                            .into()
+                            .content_fit(iced::ContentFit::Contain);
+                        if let Some(h) = aspect_height {
+                            img = img.height(h);
+                        }
+                        img.into()
                     } else {
                         container(text("Loading..."))
                             .width(thumb_w)
-                            .height(180)
+                            .height(aspect_height.unwrap_or(thumb_w * 9.0 / 16.0))
                             .center(Length::Fill)
                             .style(container::bordered_box)
                             .into()
@@ -122,23 +125,46 @@ pub fn view<'a>(
     };
 
     let has_next = !results.is_empty();
-    let pagination = row![
-        button("< Prev").on_press_maybe(if current_page > 1 {
-            Some(Message::PrevPage)
-        } else {
-            None
-        }),
-        Space::new().width(Length::Fill),
-        text(format!("Page {current_page}")).size(14),
-        Space::new().width(Length::Fill),
-        button("Next >").on_press_maybe(if has_next {
-            Some(Message::NextPage)
-        } else {
-            None
-        }),
-    ]
-    .spacing(8)
-    .padding([8, 16]);
+
+    let bottom_bar = if is_feed {
+        row![
+            text("Zoom").size(12),
+            slider(0.5..=2.5, thumbnail_zoom, Message::ZoomChanged)
+                .step(0.1)
+                .width(80),
+            Space::new().width(Length::Fill),
+        ]
+        .spacing(8)
+        .padding([6, 16])
+        .align_y(iced::Alignment::Center)
+    } else {
+        let page_input = text_input("pg", page_input_str)
+            .on_input(Message::PageInputChanged)
+            .on_submit(Message::PageInputSubmit)
+            .width(38);
+
+        row![
+            text("Zoom").size(12),
+            slider(0.5..=2.5, thumbnail_zoom, Message::ZoomChanged)
+                .step(0.1)
+                .width(80),
+            Space::new().width(Length::Fill),
+            button("< Prev").on_press_maybe(if current_page > 1 {
+                Some(Message::PrevPage)
+            } else {
+                None
+            }),
+            page_input,
+            button("Next >").on_press_maybe(if has_next {
+                Some(Message::NextPage)
+            } else {
+                None
+            }),
+        ]
+        .spacing(8)
+        .padding([6, 16])
+        .align_y(iced::Alignment::Center)
+    };
 
     let mut left = column![];
 
@@ -166,10 +192,7 @@ pub fn view<'a>(
     }
 
     left = left.push(content_area);
-
-    if !is_feed && !filtered.is_empty() {
-        left = left.push(pagination);
-    }
+    left = left.push(bottom_bar);
 
     left.width(Length::Fill).into()
 }
