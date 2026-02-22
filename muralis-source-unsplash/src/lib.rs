@@ -14,7 +14,10 @@ pub struct UnsplashConfig {
     pub access_key: Option<String>,
 }
 
-pub fn create_sources(table: &toml::Table) -> Vec<Box<dyn WallpaperSource>> {
+pub fn create_sources(
+    table: &toml::Table,
+    client: reqwest::Client,
+) -> Vec<Box<dyn WallpaperSource>> {
     let Some(val) = table.get("unsplash") else {
         return Vec::new();
     };
@@ -25,21 +28,15 @@ pub fn create_sources(table: &toml::Table) -> Vec<Box<dyn WallpaperSource>> {
     let Some(key) = config.access_key else {
         return Vec::new();
     };
-    vec![Box::new(UnsplashClient::new(key))]
+    vec![Box::new(UnsplashClient {
+        access_key: key,
+        client,
+    })]
 }
 
 pub struct UnsplashClient {
     access_key: String,
     client: reqwest::Client,
-}
-
-impl UnsplashClient {
-    pub fn new(access_key: String) -> Self {
-        Self {
-            access_key,
-            client: reqwest::Client::new(),
-        }
-    }
 }
 
 #[async_trait]
@@ -82,7 +79,7 @@ impl WallpaperSource for UnsplashClient {
                 source_type: SourceType::new("unsplash"),
                 source_id: p.id.clone(),
                 source_url: p.links.html,
-                thumbnail_url: p.urls.small,
+                thumbnail_url: p.urls.regular,
                 full_url: p.urls.raw,
                 width: p.width,
                 height: p.height,
@@ -125,7 +122,7 @@ struct UnsplashPhoto {
 #[derive(Debug, Deserialize)]
 struct UnsplashUrls {
     raw: String,
-    small: String,
+    regular: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -191,7 +188,7 @@ mod tests {
                 source_type: SourceType::new("unsplash"),
                 source_id: p.id.clone(),
                 source_url: p.links.html,
-                thumbnail_url: p.urls.small,
+                thumbnail_url: p.urls.regular,
                 full_url: p.urls.raw,
                 width: p.width,
                 height: p.height,

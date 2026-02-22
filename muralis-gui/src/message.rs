@@ -59,6 +59,8 @@ pub enum Message {
     // pagination
     NextPage,
     PrevPage,
+    PageInputChanged(String),
+    PageInputSubmit,
 
     // aspect ratio filter
     AspectFilterChanged(AspectRatioFilter),
@@ -78,7 +80,10 @@ pub enum Message {
     DaemonTogglePause,
     DaemonIpcResult(Result<IpcResponse, String>),
     ConfigSaved,
-    ConfigSaveError(String),
+
+    // zoom
+    ZoomChanged(f32),
+    ZoomSave(u32),
 
     // window
     WindowResized(f32, f32),

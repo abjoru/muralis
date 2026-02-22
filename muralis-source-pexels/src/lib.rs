@@ -14,7 +14,10 @@ pub struct PexelsConfig {
     pub api_key: Option<String>,
 }
 
-pub fn create_sources(table: &toml::Table) -> Vec<Box<dyn WallpaperSource>> {
+pub fn create_sources(
+    table: &toml::Table,
+    client: reqwest::Client,
+) -> Vec<Box<dyn WallpaperSource>> {
     let Some(val) = table.get("pexels") else {
         return Vec::new();
     };
@@ -25,21 +28,15 @@ pub fn create_sources(table: &toml::Table) -> Vec<Box<dyn WallpaperSource>> {
     let Some(key) = config.api_key else {
         return Vec::new();
     };
-    vec![Box::new(PexelsClient::new(key))]
+    vec![Box::new(PexelsClient {
+        api_key: key,
+        client,
+    })]
 }
 
 pub struct PexelsClient {
     api_key: String,
     client: reqwest::Client,
-}
-
-impl PexelsClient {
-    pub fn new(api_key: String) -> Self {
-        Self {
-            api_key,
-            client: reqwest::Client::new(),
-        }
-    }
 }
 
 #[async_trait]
@@ -84,7 +81,7 @@ impl WallpaperSource for PexelsClient {
                     source_type: SourceType::new("pexels"),
                     source_id: p.id.to_string(),
                     source_url: p.url,
-                    thumbnail_url: p.src.small,
+                    thumbnail_url: p.src.medium,
                     full_url,
                     width: p.width,
                     height: p.height,
@@ -126,7 +123,7 @@ struct PexelsPhoto {
 #[derive(Debug, Deserialize)]
 struct PexelsSrc {
     original: String,
-    small: String,
+    medium: String,
 }
 
 #[cfg(test)]
@@ -182,7 +179,7 @@ mod tests {
                 source_type: SourceType::new("pexels"),
                 source_id: p.id.to_string(),
                 source_url: p.url,
-                thumbnail_url: p.src.small,
+                thumbnail_url: p.src.medium,
                 full_url: p.src.original,
                 width: p.width,
                 height: p.height,

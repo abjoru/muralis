@@ -27,7 +27,10 @@ impl Default for WallhavenConfig {
     }
 }
 
-pub fn create_sources(table: &toml::Table) -> Vec<Box<dyn WallpaperSource>> {
+pub fn create_sources(
+    table: &toml::Table,
+    client: reqwest::Client,
+) -> Vec<Box<dyn WallpaperSource>> {
     let Some(val) = table.get("wallhaven") else {
         return Vec::new();
     };
@@ -35,21 +38,12 @@ pub fn create_sources(table: &toml::Table) -> Vec<Box<dyn WallpaperSource>> {
     if !config.enabled {
         return Vec::new();
     }
-    vec![Box::new(WallhavenClient::new(config))]
+    vec![Box::new(WallhavenClient { config, client })]
 }
 
 pub struct WallhavenClient {
     config: WallhavenConfig,
     client: reqwest::Client,
-}
-
-impl WallhavenClient {
-    pub fn new(config: WallhavenConfig) -> Self {
-        Self {
-            config,
-            client: reqwest::Client::new(),
-        }
-    }
 }
 
 #[async_trait]
@@ -92,7 +86,7 @@ impl WallpaperSource for WallhavenClient {
                 source_type: SourceType::new("wallhaven"),
                 source_id: w.id.clone(),
                 source_url: w.url,
-                thumbnail_url: w.thumbs.small,
+                thumbnail_url: w.thumbs.original,
                 full_url: w.path,
                 width: w.dimension_x,
                 height: w.dimension_y,
@@ -135,7 +129,7 @@ struct WallhavenWallpaper {
 
 #[derive(Debug, Deserialize)]
 struct WallhavenThumbs {
-    small: String,
+    original: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -208,7 +202,7 @@ mod tests {
                 source_type: SourceType::new("wallhaven"),
                 source_id: w.id.clone(),
                 source_url: w.url,
-                thumbnail_url: w.thumbs.small,
+                thumbnail_url: w.thumbs.original,
                 full_url: w.path,
                 width: w.dimension_x,
                 height: w.dimension_y,
