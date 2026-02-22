@@ -2889,7 +2889,7 @@ dependencies = [
 
 [[package]]
 name = "muralis"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "anyhow",
  "clap",
@@ -2902,7 +2902,7 @@ dependencies = [
 
 [[package]]
 name = "muralis-core"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2925,7 +2925,7 @@ dependencies = [
 
 [[package]]
 name = "muralis-daemon"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "anyhow",
  "chrono",
@@ -2942,7 +2942,7 @@ dependencies = [
 
 [[package]]
 name = "muralis-gui"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "anyhow",
  "iced",
@@ -2961,7 +2961,7 @@ dependencies = [
 
 [[package]]
 name = "muralis-source-feed"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "async-trait",
  "bytes",
@@ -2977,7 +2977,7 @@ dependencies = [
 
 [[package]]
 name = "muralis-source-pexels"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "async-trait",
  "bytes",
@@ -2990,7 +2990,7 @@ dependencies = [
 
 [[package]]
 name = "muralis-source-unsplash"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "async-trait",
  "bytes",
@@ -3003,7 +3003,7 @@ dependencies = [
 
 [[package]]
 name = "muralis-source-wallhaven"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "async-trait",
  "bytes",
