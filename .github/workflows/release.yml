@@ -20,7 +20,8 @@ jobs:
       - name: Install dependencies
         run: |
           pacman -Syu --noconfirm
-          pacman -S --noconfirm git base-devel rustup pkg-config wget github-cli
+          pacman -S --noconfirm git base-devel rustup pkg-config wget github-cli \
+            cmake qt6-base qt6-declarative qt6-quickcontrols2
 
       - uses: actions/checkout@v4
 
@@ -43,20 +44,20 @@ jobs:
             ${{ runner.os }}-cargo-release-
 
       - name: Build release
-        run: cargo build --release --locked
+        run: make
 
       - name: Strip binaries
         run: |
           strip target/release/muralis
           strip target/release/muralis-daemon
-          strip target/release/muralis-gui
+          strip muralis-gui/build/muralis-gui
 
       - name: Create tarball
         run: |
           mkdir -p release
           cp target/release/muralis release/
           cp target/release/muralis-daemon release/
-          cp target/release/muralis-gui release/
+          cp muralis-gui/build/muralis-gui release/
           cp assets/muralis.svg release/
           cp README.md LICENSE release/ 2>/dev/null || true
           tar -czvf muralis-${{ steps.get_version.outputs.version }}-x86_64-linux.tar.gz -C release .

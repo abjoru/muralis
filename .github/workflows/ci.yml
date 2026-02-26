@@ -18,7 +18,8 @@ jobs:
       - name: Install dependencies
         run: |
           pacman -Syu --noconfirm
-          pacman -S --noconfirm git base-devel rustup pkg-config
+          pacman -S --noconfirm git base-devel rustup pkg-config \
+            cmake qt6-base qt6-declarative qt6-quickcontrols2
 
       - uses: actions/checkout@v4
 
@@ -43,7 +44,7 @@ jobs:
         run: cargo clippy --workspace -- -D warnings
 
       - name: Build
-        run: cargo build --release
+        run: make
 
       - name: Run tests
         run: cargo test --workspace
