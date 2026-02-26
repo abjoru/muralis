@@ -13,7 +13,10 @@ qt_add_executable(muralis-gui
     src/processrunner.cpp
 )
 
-set_source_files_properties(qml/Theme.qml PROPERTIES QT_QML_SINGLETON_TYPE TRUE)
+set_source_files_properties(qml/Theme.qml PROPERTIES
+    QT_QML_SINGLETON_TYPE TRUE
+    QT_QML_SKIP_CACHEGEN TRUE
+)
 
 qt_add_qml_module(muralis-gui
     URI MuralisGui
