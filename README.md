@@ -19,8 +19,8 @@
 - **Plugin Architecture**: Add new sources by implementing a single trait
 - **Display Modes**: Static, Random, Sequential, Workspace-aware, Scheduled
 - **Favorites System**: SHA-256 deduplication, SQLite metadata, persistent library
-- **GUI**: Iced-based browser with dynamic tabs per source, thumbnail grid, favorites management
-- **Daemon**: Background service with IPC, system tray, workspace listener
+- **GUI**: Qt6/QML browser with source chips, feed dropdown, thumbnail grid, preview drawer
+- **Daemon**: Background service with IPC and workspace listener
 - **CLI**: Full daemon control via Unix socket
 - **Wayland-Native**: hyprpaper and swww backends with transitions
 
@@ -31,7 +31,7 @@
 - **Wayland compositor**: Hyprland
 - **Wallpaper backend**: [swww](https://github.com/LGFae/swww) or [hyprpaper](https://github.com/hyprwm/hyprpaper)
 - **SQLite**: `sqlite` (Arch) or `libsqlite3-dev` (Debian/Ubuntu)
-- **D-Bus**: For system tray (usually pre-installed)
+- **Qt6**: `qt6-base qt6-declarative` (Arch)
 
 ### Option 1: AUR Package (Arch Linux)
 
@@ -45,12 +45,8 @@ paru -S muralis
 git clone https://github.com/abjoru/muralis
 cd muralis
 
-cargo build --release
-strip target/release/muralis-{cli,daemon,gui}
-
-sudo install -Dm755 target/release/muralis-cli /usr/bin/muralis
-sudo install -Dm755 target/release/muralis-daemon /usr/bin/muralis-daemon
-sudo install -Dm755 target/release/muralis-gui /usr/bin/muralis-gui
+make
+sudo make install DESTDIR=/
 ```
 
 ### Hyprland Autostart
@@ -67,15 +63,13 @@ exec-once = muralis-daemon
 ### Daemon
 
 ```bash
-# Start daemon (runs in background with system tray)
 muralis-daemon
 
 # With debug logging
 RUST_LOG=debug muralis-daemon
 ```
 
-The daemon spawns 4 concurrent tasks:
-- System tray (left-click toggles GUI, right-click for menu)
+The daemon spawns 3 concurrent tasks:
 - IPC server (Unix socket)
 - Display engine (wallpaper rotation/scheduling)
 - Workspace listener (Hyprland events)
@@ -104,11 +98,12 @@ muralis quit                # Stop daemon
 muralis-gui                 # Launch wallpaper browser
 ```
 
-Or click the system tray icon to toggle. The GUI provides:
-- Tabbed search across all configured sources
-- Thumbnail grid with preview
+The GUI provides:
+- Source chips for API sources, dropdown for feed sources
+- Thumbnail grid with adaptive columns
+- Preview drawer with metadata and actions
 - One-click favoriting (downloads full image, deduplicates by SHA-256)
-- Favorites management
+- Keyboard-driven navigation (grid/search/preview modes)
 
 ## Configuration
 
@@ -211,8 +206,8 @@ tags = ["dark", "night"]
 muralis/
 ├── muralis-core/              # Shared library (traits, models, config, DB, IPC)
 ├── muralis-cli/               # CLI binary (clap)
-├── muralis-daemon/            # Background service (tray, IPC, display engine)
-├── muralis-gui/               # Iced GUI (search, favorites, tabs)
+├── muralis-daemon/            # Background service (IPC, display engine)
+├── muralis-gui/               # Qt6/QML GUI (C++ + QML, calls CLI via QProcess)
 ├── muralis-source-wallhaven/  # Wallhaven API plugin
 ├── muralis-source-unsplash/   # Unsplash API plugin
 ├── muralis-source-pexels/     # Pexels API plugin
@@ -223,8 +218,8 @@ muralis/
 
 1. Create `muralis-source-foo/` implementing `WallpaperSource` trait
 2. Export `pub fn create_sources(table: &toml::Table) -> Vec<Box<dyn WallpaperSource>>`
-3. Add to workspace `Cargo.toml` and `muralis-gui/Cargo.toml`
-4. Add one line in `build_registry()` in `muralis-gui/src/app.rs`
+3. Add to workspace `Cargo.toml`
+4. Add one line in `build_registry()` in `muralis-cli/src/main.rs`
 5. Add `[sources.foo]` to config
 
 ### Data Paths
@@ -251,13 +246,13 @@ bind = $mainMod SHIFT, W, exec, muralis-gui
 ## Development
 
 ```bash
-cargo build                          # Build all crates
+make                                 # Build Rust crates + QML GUI
 cargo test                           # Run all tests
 cargo clippy --workspace             # Lint
 cargo fmt --all -- --check           # Check formatting
 cargo run -p muralis-cli -- status   # Run CLI
 cargo run -p muralis-daemon          # Run daemon
-cargo run -p muralis-gui             # Run GUI
+./muralis-gui/build/muralis-gui      # Run GUI
 ```
 
 ## License
