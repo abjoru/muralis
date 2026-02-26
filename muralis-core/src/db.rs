@@ -155,6 +155,15 @@ impl Database {
         Ok(count)
     }
 
+    pub fn is_favorited_by_source(&self, source_type: &str, source_id: &str) -> Result<bool> {
+        let count: u32 = self.conn.query_row(
+            "SELECT COUNT(*) FROM wallpapers WHERE source_type = ?1 AND source_id = ?2",
+            params![source_type, source_id],
+            |row| row.get(0),
+        )?;
+        Ok(count > 0)
+    }
+
     pub fn wallpaper_exists(&self, id: &str) -> Result<bool> {
         let count: u32 = self.conn.query_row(
             "SELECT COUNT(*) FROM wallpapers WHERE id = ?1",

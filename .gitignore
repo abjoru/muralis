@@ -1,4 +1,5 @@
 /target
+muralis-gui/build/
 *.swp
 *.swo
 .env

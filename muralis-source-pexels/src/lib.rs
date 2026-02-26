@@ -92,6 +92,43 @@ impl WallpaperSource for PexelsClient {
         Ok(previews)
     }
 
+    async fn resolve_url(&self, url: &str) -> Result<Option<WallpaperPreview>> {
+        // Match pexels.com/photo/<slug>-<id>/
+        let id = if url.contains("pexels.com/photo/") {
+            // Extract trailing numeric ID: pexels.com/photo/some-slug-12345/
+            url.trim_end_matches('/')
+                .rsplit('-')
+                .next()
+                .and_then(|s| s.parse::<u64>().ok())
+        } else {
+            None
+        };
+
+        let Some(id) = id else {
+            return Ok(None);
+        };
+
+        let resp: PexelsPhoto = self
+            .client
+            .get(format!("{API_BASE}/photos/{id}"))
+            .header("Authorization", &self.api_key)
+            .send()
+            .await?
+            .json()
+            .await?;
+
+        Ok(Some(WallpaperPreview {
+            source_type: SourceType::new("pexels"),
+            source_id: resp.id.to_string(),
+            source_url: resp.url,
+            thumbnail_url: resp.src.medium,
+            full_url: resp.src.original,
+            width: resp.width,
+            height: resp.height,
+            tags: Vec::new(),
+        }))
+    }
+
     async fn download(&self, preview: &WallpaperPreview) -> Result<bytes::Bytes> {
         let bytes = self
             .client
