@@ -60,6 +60,9 @@ int main(int argc, char *argv[]) {
     engine.rootContext()->setContextProperty("ConfigDir", configDir);
     engine.rootContext()->setContextProperty("StateDir", stateDir);
 
+    // Ensure the QML engine finds the embedded module qmldir
+    engine.addImportPath(QStringLiteral("qrc:/"));
+
     fprintf(stderr, "Loading QML...\n");
     fprintf(stderr, "ConfigDir: %s\n", qPrintable(configDir));
     fprintf(stderr, "StateDir: %s\n", qPrintable(stateDir));
