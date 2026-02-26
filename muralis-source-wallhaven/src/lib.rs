@@ -96,6 +96,35 @@ impl WallpaperSource for WallhavenClient {
         Ok(previews)
     }
 
+    async fn resolve_url(&self, url: &str) -> Result<Option<WallpaperPreview>> {
+        // Match wallhaven.cc/w/<id> or whvn.cc/<id>
+        let id = if let Some(rest) = url.strip_prefix("https://wallhaven.cc/w/") {
+            rest.trim_end_matches('/')
+        } else if let Some(rest) = url.strip_prefix("https://whvn.cc/") {
+            rest.trim_end_matches('/')
+        } else {
+            return Ok(None);
+        };
+
+        let mut req = self.client.get(format!("{API_BASE}/w/{id}"));
+        if let Some(ref key) = self.config.api_key {
+            req = req.query(&[("apikey", key)]);
+        }
+
+        let resp: WallhavenDetailResponse = req.send().await?.json().await?;
+        let w = resp.data;
+        Ok(Some(WallpaperPreview {
+            source_type: SourceType::new("wallhaven"),
+            source_id: w.id.clone(),
+            source_url: w.url,
+            thumbnail_url: w.thumbs.original,
+            full_url: w.path,
+            width: w.dimension_x,
+            height: w.dimension_y,
+            tags: w.tags.into_iter().map(|t| t.name).collect(),
+        }))
+    }
+
     async fn download(&self, preview: &WallpaperPreview) -> Result<bytes::Bytes> {
         let bytes = self
             .client
@@ -113,6 +142,11 @@ impl WallpaperSource for WallhavenClient {
 #[derive(Debug, Deserialize)]
 struct WallhavenResponse {
     data: Vec<WallhavenWallpaper>,
+}
+
+#[derive(Debug, Deserialize)]
+struct WallhavenDetailResponse {
+    data: WallhavenWallpaper,
 }
 
 #[derive(Debug, Deserialize)]

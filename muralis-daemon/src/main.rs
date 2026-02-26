@@ -1,6 +1,5 @@
 mod display;
 mod ipc;
-mod tray;
 mod workspace;
 
 use tokio::sync::{mpsc, watch};
@@ -31,9 +30,6 @@ async fn main() -> anyhow::Result<()> {
     let backend = create_backend(&config);
     let (cmd_tx, cmd_rx) = mpsc::channel(32);
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
-
-    // spawn tray
-    tray::spawn_tray(cmd_tx.clone());
 
     // spawn workspace listener
     let ws_tx = cmd_tx.clone();

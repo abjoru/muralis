@@ -68,6 +68,7 @@ impl WallpaperSource for FeedSource {
         let body = self
             .client
             .get(&self.config.url)
+            .header("User-Agent", "muralis/0.1 (wallpaper manager)")
             .send()
             .await?
             .bytes()

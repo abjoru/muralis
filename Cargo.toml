@@ -3,7 +3,6 @@ members = [
     "muralis-core",
     "muralis-daemon",
     "muralis-cli",
-    "muralis-gui",
     "muralis-source-wallhaven",
     "muralis-source-unsplash",
     "muralis-source-pexels",
@@ -35,8 +34,6 @@ sha2 = "0.10"
 dirs = "6"
 feed-rs = "2.3"
 hyprland = "0.4.0-alpha.2"
-ksni = { version = "0.3", features = ["blocking"] }
-iced = { version = "0.14", features = ["image", "svg", "tokio", "advanced"] }
 chrono = { version = "0.4", features = ["serde"] }
 scraper = "0.22"
 url = { version = "2", features = ["serde"] }

@@ -89,6 +89,35 @@ impl WallpaperSource for UnsplashClient {
         Ok(previews)
     }
 
+    async fn resolve_url(&self, url: &str) -> Result<Option<WallpaperPreview>> {
+        // Match unsplash.com/photos/<id>
+        let id = if let Some(rest) = url.strip_prefix("https://unsplash.com/photos/") {
+            rest.split('/').next().unwrap_or(rest).trim_end_matches('/')
+        } else {
+            return Ok(None);
+        };
+
+        let resp: UnsplashPhoto = self
+            .client
+            .get(format!("{API_BASE}/photos/{id}"))
+            .header("Authorization", format!("Client-ID {}", self.access_key))
+            .send()
+            .await?
+            .json()
+            .await?;
+
+        Ok(Some(WallpaperPreview {
+            source_type: SourceType::new("unsplash"),
+            source_id: resp.id.clone(),
+            source_url: resp.links.html,
+            thumbnail_url: resp.urls.regular,
+            full_url: resp.urls.raw,
+            width: resp.width,
+            height: resp.height,
+            tags: resp.tags.into_iter().map(|t| t.title).collect(),
+        }))
+    }
+
     async fn download(&self, preview: &WallpaperPreview) -> Result<bytes::Bytes> {
         let bytes = self
             .client

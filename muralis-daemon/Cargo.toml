@@ -11,7 +11,6 @@ anyhow = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 serde_json = { workspace = true }
-ksni = { workspace = true }
 hyprland = { workspace = true }
 rand = { workspace = true }
 chrono = { workspace = true }

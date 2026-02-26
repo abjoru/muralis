@@ -86,6 +86,23 @@ impl AspectRatioFilter {
     }
 }
 
+impl std::str::FromStr for AspectRatioFilter {
+    type Err = String;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s {
+            "all" => Ok(Self::All),
+            "16x9" | "16:9" => Ok(Self::Ratio16x9),
+            "21x9" | "21:9" => Ok(Self::Ratio21x9),
+            "32x9" | "32:9" => Ok(Self::Ratio32x9),
+            "16x10" | "16:10" => Ok(Self::Ratio16x10),
+            "4x3" | "4:3" => Ok(Self::Ratio4x3),
+            "3x2" | "3:2" => Ok(Self::Ratio3x2),
+            other => Err(format!("unknown aspect ratio: {other}")),
+        }
+    }
+}
+
 impl fmt::Display for AspectRatioFilter {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -114,6 +131,12 @@ pub trait WallpaperSource: Send + Sync {
         aspect: AspectRatioFilter,
     ) -> Result<Vec<WallpaperPreview>>;
     async fn download(&self, preview: &WallpaperPreview) -> Result<bytes::Bytes>;
+
+    /// Resolve a URL from this source into a WallpaperPreview.
+    /// Sources opt in by overriding; default returns None.
+    async fn resolve_url(&self, _url: &str) -> Result<Option<WallpaperPreview>> {
+        Ok(None)
+    }
 }
 
 pub struct SourceRegistry {
