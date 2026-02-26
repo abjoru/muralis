@@ -21,7 +21,7 @@ jobs:
         run: |
           pacman -Syu --noconfirm
           pacman -S --noconfirm git base-devel rustup pkg-config wget github-cli \
-            cmake qt6-base qt6-declarative qt6-quickcontrols2
+            cmake qt6-base qt6-declarative
 
       - uses: actions/checkout@v4
 
