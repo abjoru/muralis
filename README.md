@@ -33,13 +33,7 @@
 - **SQLite**: `sqlite` (Arch) or `libsqlite3-dev` (Debian/Ubuntu)
 - **Qt6**: `qt6-base qt6-declarative` (Arch)
 
-### Option 1: AUR Package (Arch Linux)
-
-```bash
-paru -S muralis
-```
-
-### Option 2: Building from Source
+### Build from Source
 
 ```bash
 git clone https://github.com/abjoru/muralis
@@ -217,7 +211,7 @@ muralis/
 ### Adding a New Source
 
 1. Create `muralis-source-foo/` implementing `WallpaperSource` trait
-2. Export `pub fn create_sources(table: &toml::Table) -> Vec<Box<dyn WallpaperSource>>`
+2. Export `pub fn create_sources(table: &toml::Table, client: reqwest::Client) -> Vec<Box<dyn WallpaperSource>>`
 3. Add to workspace `Cargo.toml`
 4. Add one line in `build_registry()` in `muralis-cli/src/main.rs`
 5. Add `[sources.foo]` to config
