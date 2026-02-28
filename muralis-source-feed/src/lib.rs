@@ -1,4 +1,7 @@
+use std::io::{BufReader, Cursor};
+
 use async_trait::async_trait;
+use image::ImageReader;
 use scraper::{Html, Selector};
 use serde::Deserialize;
 
@@ -80,7 +83,7 @@ impl WallpaperSource for FeedSource {
         let mut previews = Vec::new();
 
         for entry in &feed.entries {
-            if let Some(image_url) = extract_image(entry) {
+            if let Some((image_url, width, height)) = extract_image(entry) {
                 let id = entry.id.replace(['/', ':', '.'], "_");
                 let title = entry
                     .title
@@ -98,10 +101,29 @@ impl WallpaperSource for FeedSource {
                         .unwrap_or_default(),
                     thumbnail_url: image_url.clone(),
                     full_url: image_url,
-                    width: 0,
-                    height: 0,
+                    width,
+                    height,
                     tags: vec![title, self.config.name.clone()],
                 });
+            }
+        }
+
+        // Fetch dimensions for entries with unknown sizes
+        let mut handles = Vec::new();
+        for (i, p) in previews.iter().enumerate() {
+            if p.width == 0 && p.height == 0 {
+                let client = self.client.clone();
+                let url = p.thumbnail_url.clone();
+                handles.push((
+                    i,
+                    tokio::spawn(async move { fetch_dimensions(&client, &url).await }),
+                ));
+            }
+        }
+        for (i, handle) in handles {
+            if let Ok((w, h)) = handle.await {
+                previews[i].width = w;
+                previews[i].height = h;
             }
         }
 
@@ -120,12 +142,31 @@ impl WallpaperSource for FeedSource {
     }
 }
 
-/// Extract image URL from feed entry using multiple strategies:
-/// 1. Media content objects
-/// 2. Enclosure/link with image type
-/// 3. Inline HTML <img> parsing from content/summary
-fn extract_image(entry: &feed_rs::model::Entry) -> Option<String> {
-    // 1. media content
+/// Fetch image dimensions via partial HTTP download (first 32KB).
+async fn fetch_dimensions(client: &reqwest::Client, url: &str) -> (u32, u32) {
+    let Ok(resp) = client
+        .get(url)
+        .header("User-Agent", "muralis/0.1 (wallpaper manager)")
+        .header("Range", "bytes=0-32767")
+        .send()
+        .await
+    else {
+        return (0, 0);
+    };
+    let Ok(bytes) = resp.bytes().await else {
+        return (0, 0);
+    };
+    let cursor = Cursor::new(bytes.as_ref());
+    let Ok(reader) = ImageReader::new(BufReader::new(cursor)).with_guessed_format() else {
+        return (0, 0);
+    };
+    reader.into_dimensions().unwrap_or((0, 0))
+}
+
+/// Extract image URL and dimensions from feed entry.
+/// Returns (url, width, height). Dimensions are 0 when unknown from metadata.
+fn extract_image(entry: &feed_rs::model::Entry) -> Option<(String, u32, u32)> {
+    // 1. media content (may include dimensions)
     for media in &entry.media {
         for content in &media.content {
             if let Some(ref url) = content.url {
@@ -136,12 +177,16 @@ fn extract_image(entry: &feed_rs::model::Entry) -> Option<String> {
                         .as_ref()
                         .is_some_and(|t| t.ty() == "image")
                 {
-                    return Some(url_str.to_string());
+                    let w = content.width.unwrap_or(0);
+                    let h = content.height.unwrap_or(0);
+                    return Some((url_str.to_string(), w, h));
                 }
             }
         }
         if let Some(thumb) = media.thumbnails.first() {
-            return Some(thumb.image.uri.clone());
+            let w = thumb.image.width.unwrap_or(0);
+            let h = thumb.image.height.unwrap_or(0);
+            return Some((thumb.image.uri.clone(), w, h));
         }
     }
 
@@ -152,7 +197,7 @@ fn extract_image(entry: &feed_rs::model::Entry) -> Option<String> {
             .as_deref()
             .is_some_and(|t| t.starts_with("image/"))
         {
-            return Some(link.href.clone());
+            return Some((link.href.clone(), 0, 0));
         }
     }
 
@@ -160,13 +205,13 @@ fn extract_image(entry: &feed_rs::model::Entry) -> Option<String> {
     if let Some(ref content) = entry.content {
         if let Some(ref body) = content.body {
             if let Some(url) = extract_img_from_html(body) {
-                return Some(url);
+                return Some((url, 0, 0));
             }
         }
     }
     if let Some(ref summary) = entry.summary {
         if let Some(url) = extract_img_from_html(&summary.content) {
-            return Some(url);
+            return Some((url, 0, 0));
         }
     }
 
@@ -247,11 +292,17 @@ mod tests {
 
         // entry with enclosure
         let img = extract_image(&feed.entries[0]);
-        assert_eq!(img.as_deref(), Some("https://example.com/sunset.jpg"));
+        assert_eq!(
+            img.as_ref().map(|(u, _, _)| u.as_str()),
+            Some("https://example.com/sunset.jpg")
+        );
 
         // entry with inline img
         let img = extract_image(&feed.entries[1]);
-        assert_eq!(img.as_deref(), Some("https://example.com/mountain.jpg"));
+        assert_eq!(
+            img.as_ref().map(|(u, _, _)| u.as_str()),
+            Some("https://example.com/mountain.jpg")
+        );
 
         // entry with no image
         assert!(extract_image(&feed.entries[2]).is_none());
