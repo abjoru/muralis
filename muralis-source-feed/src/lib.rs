@@ -1,13 +1,24 @@
 use std::io::{BufReader, Cursor};
+use std::sync::{Arc, LazyLock};
 
 use async_trait::async_trait;
 use image::ImageReader;
 use scraper::{Html, Selector};
 use serde::Deserialize;
+use tokio::sync::Semaphore;
 
 use muralis_core::error::Result;
 use muralis_core::models::{SourceType, WallpaperPreview};
 use muralis_core::sources::{AspectRatioFilter, WallpaperSource};
+
+static IMG_SEL: LazyLock<Selector> =
+    LazyLock::new(|| Selector::parse("img[src]").expect("valid selector"));
+
+/// Max concurrent dimension fetch tasks.
+const MAX_DIM_CONCURRENCY: usize = 8;
+
+/// Skip dimension fetch if content-length exceeds this (server ignored Range).
+const MAX_DIM_BODY_BYTES: u64 = 512 * 1024;
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct FeedConfig {
@@ -71,13 +82,12 @@ impl WallpaperSource for FeedSource {
         let body = self
             .client
             .get(&self.config.url)
-            .header("User-Agent", "muralis/0.1 (wallpaper manager)")
             .send()
             .await?
             .bytes()
             .await?;
         let feed = feed_rs::parser::parse(&body[..]).map_err(|e| {
-            muralis_core::error::MuralisError::Config(format!("feed parse error: {e}"))
+            muralis_core::error::MuralisError::Source(format!("feed parse error: {e}"))
         })?;
 
         let mut previews = Vec::new();
@@ -109,21 +119,31 @@ impl WallpaperSource for FeedSource {
         }
 
         // Fetch dimensions for entries with unknown sizes
+        let semaphore = Arc::new(Semaphore::new(MAX_DIM_CONCURRENCY));
         let mut handles = Vec::new();
         for (i, p) in previews.iter().enumerate() {
             if p.width == 0 && p.height == 0 {
                 let client = self.client.clone();
                 let url = p.thumbnail_url.clone();
+                let permit = semaphore.clone();
                 handles.push((
                     i,
-                    tokio::spawn(async move { fetch_dimensions(&client, &url).await }),
+                    tokio::spawn(async move {
+                        let _permit = permit.acquire().await;
+                        fetch_dimensions(&client, &url).await
+                    }),
                 ));
             }
         }
         for (i, handle) in handles {
-            if let Ok((w, h)) = handle.await {
-                previews[i].width = w;
-                previews[i].height = h;
+            match handle.await {
+                Ok((w, h)) => {
+                    previews[i].width = w;
+                    previews[i].height = h;
+                }
+                Err(e) => {
+                    tracing::warn!("dimension fetch task failed: {e}");
+                }
             }
         }
 
@@ -144,23 +164,49 @@ impl WallpaperSource for FeedSource {
 
 /// Fetch image dimensions via partial HTTP download (first 32KB).
 async fn fetch_dimensions(client: &reqwest::Client, url: &str) -> (u32, u32) {
-    let Ok(resp) = client
+    let resp = match client
         .get(url)
-        .header("User-Agent", "muralis/0.1 (wallpaper manager)")
         .header("Range", "bytes=0-32767")
         .send()
         .await
-    else {
-        return (0, 0);
+    {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::debug!("dimension fetch request failed for {url}: {e}");
+            return (0, 0);
+        }
     };
-    let Ok(bytes) = resp.bytes().await else {
-        return (0, 0);
+
+    // If server ignored Range and sends full body, check content-length
+    if let Some(len) = resp.content_length() {
+        if resp.status() == reqwest::StatusCode::OK && len > MAX_DIM_BODY_BYTES {
+            tracing::debug!("skipping dimension fetch for {url}: body too large ({len} bytes)");
+            return (0, 0);
+        }
+    }
+
+    let bytes = match resp.bytes().await {
+        Ok(b) => b,
+        Err(e) => {
+            tracing::debug!("dimension fetch body read failed for {url}: {e}");
+            return (0, 0);
+        }
     };
     let cursor = Cursor::new(bytes.as_ref());
-    let Ok(reader) = ImageReader::new(BufReader::new(cursor)).with_guessed_format() else {
-        return (0, 0);
+    let reader = match ImageReader::new(BufReader::new(cursor)).with_guessed_format() {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::debug!("dimension fetch format guess failed for {url}: {e}");
+            return (0, 0);
+        }
     };
-    reader.into_dimensions().unwrap_or((0, 0))
+    match reader.into_dimensions() {
+        Ok(dims) => dims,
+        Err(e) => {
+            tracing::debug!("dimension fetch decode failed for {url}: {e}");
+            (0, 0)
+        }
+    }
 }
 
 /// Extract image URL and dimensions from feed entry.
@@ -220,8 +266,7 @@ fn extract_image(entry: &feed_rs::model::Entry) -> Option<(String, u32, u32)> {
 
 fn extract_img_from_html(html: &str) -> Option<String> {
     let doc = Html::parse_fragment(html);
-    let sel = Selector::parse("img[src]").ok()?;
-    doc.select(&sel)
+    doc.select(&IMG_SEL)
         .next()
         .and_then(|el| el.value().attr("src"))
         .map(|s| s.to_string())
@@ -306,5 +351,105 @@ mod tests {
 
         // entry with no image
         assert!(extract_image(&feed.entries[2]).is_none());
+    }
+
+    #[test]
+    fn test_media_content_with_dimensions() {
+        let xml = br#"<?xml version="1.0" encoding="UTF-8"?>
+        <rss version="2.0" xmlns:media="http://search.yahoo.com/mrss/">
+            <channel>
+                <title>Test</title>
+                <item>
+                    <title>Wide Image</title>
+                    <guid>wide-001</guid>
+                    <media:content url="https://example.com/wide.jpg" type="image/jpeg" width="1920" height="1080"/>
+                </item>
+            </channel>
+        </rss>"#;
+
+        let feed = feed_rs::parser::parse(&xml[..]).unwrap();
+        let (url, w, h) = extract_image(&feed.entries[0]).unwrap();
+        assert_eq!(url, "https://example.com/wide.jpg");
+        assert_eq!(w, 1920);
+        assert_eq!(h, 1080);
+    }
+
+    #[test]
+    fn test_media_thumbnail_fallback_with_dimensions() {
+        let xml = br#"<?xml version="1.0" encoding="UTF-8"?>
+        <rss version="2.0" xmlns:media="http://search.yahoo.com/mrss/">
+            <channel>
+                <title>Test</title>
+                <item>
+                    <title>Thumb Only</title>
+                    <guid>thumb-001</guid>
+                    <media:thumbnail url="https://example.com/thumb.jpg" width="640" height="480"/>
+                </item>
+            </channel>
+        </rss>"#;
+
+        let feed = feed_rs::parser::parse(&xml[..]).unwrap();
+        let (url, w, h) = extract_image(&feed.entries[0]).unwrap();
+        assert_eq!(url, "https://example.com/thumb.jpg");
+        assert_eq!(w, 640);
+        assert_eq!(h, 480);
+    }
+
+    #[test]
+    fn test_parse_atom_feed() {
+        let xml = br#"<?xml version="1.0" encoding="UTF-8"?>
+        <feed xmlns="http://www.w3.org/2005/Atom">
+            <title>Atom Test</title>
+            <entry>
+                <title>Atom Image</title>
+                <id>atom-001</id>
+                <link href="https://example.com/atom-entry"/>
+                <content type="html"><![CDATA[<img src="https://example.com/atom.jpg">]]></content>
+            </entry>
+        </feed>"#;
+
+        let feed = feed_rs::parser::parse(&xml[..]).unwrap();
+        assert_eq!(feed.entries.len(), 1);
+
+        let (url, w, h) = extract_image(&feed.entries[0]).unwrap();
+        assert_eq!(url, "https://example.com/atom.jpg");
+        assert_eq!(w, 0);
+        assert_eq!(h, 0);
+    }
+
+    #[test]
+    fn test_create_sources_filters_disabled() {
+        let toml_str = r#"
+            [[feeds]]
+            name = "active"
+            url = "https://example.com/feed1.xml"
+            enabled = true
+
+            [[feeds]]
+            name = "inactive"
+            url = "https://example.com/feed2.xml"
+            enabled = false
+
+            [[feeds]]
+            name = "default"
+            url = "https://example.com/feed3.xml"
+        "#;
+        let table: toml::Table = toml_str.parse().unwrap();
+        let client = reqwest::Client::new();
+        let sources = create_sources(&table, client);
+        assert_eq!(sources.len(), 1);
+        assert_eq!(sources[0].name(), "active");
+    }
+
+    #[test]
+    fn test_feed_config_defaults() {
+        let toml_str = r#"
+            name = "test"
+            url = "https://example.com/feed.xml"
+        "#;
+        let config: FeedConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.name, "test");
+        assert_eq!(config.url, "https://example.com/feed.xml");
+        assert!(!config.enabled);
     }
 }

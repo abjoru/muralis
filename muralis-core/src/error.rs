@@ -26,6 +26,9 @@ pub enum MuralisError {
     #[error("source not configured: {0}")]
     SourceNotConfigured(String),
 
+    #[error("source error: {0}")]
+    Source(String),
+
     #[error("wallpaper not found: {0}")]
     WallpaperNotFound(String),
 

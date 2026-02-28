@@ -1678,7 +1678,6 @@ dependencies = [
  "reqwest",
  "scraper",
  "serde",
- "serde_json",
  "tokio",
  "toml",
  "tracing",

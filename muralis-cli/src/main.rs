@@ -132,7 +132,13 @@ struct SourceInfo {
 }
 
 fn build_registry(config: &Config) -> Result<(SourceRegistry, reqwest::Client)> {
-    let client = reqwest::Client::new();
+    let client = reqwest::Client::builder()
+        .user_agent(concat!(
+            "muralis/",
+            env!("CARGO_PKG_VERSION"),
+            " (wallpaper manager)"
+        ))
+        .build()?;
     let sources = &config.sources;
     let mut registry = SourceRegistry::new();
 
