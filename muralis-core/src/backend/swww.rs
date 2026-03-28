@@ -18,7 +18,7 @@ impl SwwwBackend {
     }
 
     fn build_command(&self, path: &Path, output: Option<&str>) -> Command {
-        let mut cmd = Command::new("swww");
+        let mut cmd = Command::new("awww");
         cmd.arg("img").arg(path);
         cmd.arg("--transition-type").arg(&self.transition.r#type);
         cmd.arg("--transition-duration")
@@ -41,11 +41,11 @@ impl WallpaperBackend for SwwwBackend {
             .build_command(path, Some(monitor))
             .output()
             .await
-            .map_err(|e| MuralisError::Backend(format!("failed to run swww: {e}")))?;
+            .map_err(|e| MuralisError::Backend(format!("failed to run awww: {e}")))?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(MuralisError::Backend(format!("swww failed: {stderr}")));
+            return Err(MuralisError::Backend(format!("awww failed: {stderr}")));
         }
         Ok(())
     }
@@ -55,17 +55,17 @@ impl WallpaperBackend for SwwwBackend {
             .build_command(path, None)
             .output()
             .await
-            .map_err(|e| MuralisError::Backend(format!("failed to run swww: {e}")))?;
+            .map_err(|e| MuralisError::Backend(format!("failed to run awww: {e}")))?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(MuralisError::Backend(format!("swww failed: {stderr}")));
+            return Err(MuralisError::Backend(format!("awww failed: {stderr}")));
         }
         Ok(())
     }
 
     fn name(&self) -> &str {
-        "swww"
+        "awww"
     }
 }
 
@@ -75,7 +75,7 @@ mod tests {
     use std::path::PathBuf;
 
     #[test]
-    fn test_swww_command_args() {
+    fn test_awww_command_args() {
         let transition = TransitionConfig {
             r#type: "fade".into(),
             duration: 2.0,
@@ -93,7 +93,7 @@ mod tests {
             .map(|a| a.to_string_lossy().to_string())
             .collect();
 
-        assert_eq!(prog, "swww");
+        assert_eq!(prog, "awww");
         assert_eq!(args[0], "img");
         assert_eq!(args[1], "/data/wallpapers/abc123.jpg");
         assert!(args.contains(&"--transition-type".to_string()));
