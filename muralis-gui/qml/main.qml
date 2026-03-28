@@ -29,7 +29,19 @@ ApplicationWindow {
     // Load sources on startup
     Component.onCompleted: {
         CLI.run("sources", ["sources", "list"])
-        filterBar.focusSearch()
+        if (InitialQuery && InitialQuery.length > 0) {
+            filterBar.searchText = InitialQuery
+            // Delay search to ensure UI is ready
+            initialSearchTimer.start()
+        } else {
+            filterBar.focusSearch()
+        }
+    }
+
+    Timer {
+        id: initialSearchTimer
+        interval: 500
+        onTriggered: executeSearch(InitialQuery, "All", 1, "all")
     }
 
     onKeyboardModeChanged: {

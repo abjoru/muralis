@@ -1,0 +1,38 @@
+workspaces = []
+schedules = []
+
+[general]
+backend = "swww"
+cache_max_mb = 500
+
+[display]
+mode = "random_startup"
+interval = "30m"
+min_resolution = "auto"
+aspect_ratio = "auto"
+
+[display.transition]
+type = "fade"
+duration = 2.0
+fps = 60
+
+[[sources.feeds]]
+enabled = true
+name = "Landscapes"
+url = "https://www.reddit.com/r/ImaginaryLandscapes/.rss"
+
+[sources.wallhaven]
+enabled = true
+categories = "100"
+purity = "100"
+
+[sources.unsplash]
+enabled = false
+
+[sources.pexels]
+enabled = false
+
+[filter]
+min_width = 1920
+min_height = 1080
+exclude_tags = []

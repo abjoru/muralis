@@ -1,3 +1,4 @@
+#include <QCommandLineParser>
 #include <QDebug>
 #include <QGuiApplication>
 #include <cstdio>
@@ -48,6 +49,13 @@ int main(int argc, char *argv[]) {
     app.setApplicationName("muralis-gui");
     app.setOrganizationName("muralis");
 
+    QCommandLineParser parser;
+    parser.addHelpOption();
+    parser.addOption({{"q", "query"}, "Initial search query", "query"});
+    parser.process(app);
+
+    QString initialQuery = parser.value("query");
+
     QQuickStyle::setStyle("Material");
 
     QQmlApplicationEngine engine;
@@ -59,6 +67,7 @@ int main(int argc, char *argv[]) {
     QString configDir = QStandardPaths::writableLocation(QStandardPaths::ConfigLocation);
     engine.rootContext()->setContextProperty("ConfigDir", configDir);
     engine.rootContext()->setContextProperty("StateDir", stateDir);
+    engine.rootContext()->setContextProperty("InitialQuery", initialQuery);
 
     // Ensure the QML engine finds the embedded module qmldir
     engine.addImportPath(QStringLiteral("qrc:/"));

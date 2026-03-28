@@ -13,6 +13,8 @@
 
 **Beta Release** - Core functionality complete and stable. All major features implemented and tested.
 
+![Muralis GUI](assets/screenshot.png)
+
 ## Features
 
 - **Multi-Source Search**: Wallhaven, Unsplash, Pexels, and RSS/Atom feeds
@@ -89,7 +91,8 @@ muralis quit                # Stop daemon
 ### GUI
 
 ```bash
-muralis-gui                 # Launch wallpaper browser
+muralis-gui                          # Launch wallpaper browser
+muralis-gui --query "landscape"      # Launch with initial search
 ```
 
 The GUI provides:
