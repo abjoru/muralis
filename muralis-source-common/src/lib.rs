@@ -154,7 +154,7 @@ where
         let server_ratio = self
             .desc
             .server_aspect_param
-            .and_then(|param| aspect.to_wallhaven_ratio().map(|r| (param, r)));
+            .zip(aspect.to_wallhaven_ratio());
         let client_filter = self.desc.server_aspect_param.is_none();
 
         let mut out: Vec<WallpaperPreview> = Vec::new();
