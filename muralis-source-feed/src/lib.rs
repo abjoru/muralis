@@ -77,7 +77,7 @@ impl WallpaperSource for FeedSource {
         _query: &str,
         _page: u32,
         _per_page: u32,
-        _aspect: AspectRatioFilter,
+        aspect: AspectRatioFilter,
     ) -> Result<Vec<WallpaperPreview>> {
         let body = self
             .client
@@ -87,7 +87,11 @@ impl WallpaperSource for FeedSource {
             .bytes()
             .await?;
         let feed = feed_rs::parser::parse(&body[..]).map_err(|e| {
-            muralis_core::error::MuralisError::Source(format!("feed parse error: {e}"))
+            muralis_core::error::MuralisError::Source {
+                source_type: "feed".into(),
+                op: "parse".into(),
+                kind: e.to_string(),
+            }
         })?;
 
         let mut previews = Vec::new();
@@ -146,6 +150,10 @@ impl WallpaperSource for FeedSource {
                 }
             }
         }
+
+        // Honor the aspect contract once dimensions are known (matches() keeps
+        // entries whose size is still unknown).
+        previews.retain(|p| aspect.matches(p.width, p.height));
 
         Ok(previews)
     }

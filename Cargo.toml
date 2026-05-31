@@ -3,6 +3,7 @@ members = [
     "muralis-core",
     "muralis-daemon",
     "muralis-cli",
+    "muralis-source-common",
     "muralis-source-wallhaven",
     "muralis-source-unsplash",
     "muralis-source-pexels",

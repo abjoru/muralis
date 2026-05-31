@@ -123,6 +123,14 @@ pub trait WallpaperSource: Send + Sync {
     fn name(&self) -> &str;
     /// DB type string (e.g. "wallhaven", "feed")
     fn source_type(&self) -> &str;
+
+    /// Return up to `per_page` previews for logical `page`, each matching
+    /// `aspect` (sources MUST honor the aspect filter themselves — callers do
+    /// not post-filter). `per_page` is a best-effort target, not a guarantee:
+    /// a page may return fewer matches even when more exist upstream, because
+    /// filtering happens within a bounded block of upstream pages (see the
+    /// `Block` / page-filling design in `muralis-source-common`). An empty
+    /// result is the caller's end-of-results signal.
     async fn search(
         &self,
         query: &str,

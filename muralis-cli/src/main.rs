@@ -227,11 +227,8 @@ async fn main() -> Result<()> {
             for src in &sources {
                 match src.search(&query, page, per_page, aspect).await {
                     Ok(previews) => {
+                        // Sources honor the aspect filter themselves now.
                         for p in previews {
-                            // Client-side aspect filter for sources that don't support it natively
-                            if !aspect.matches(p.width, p.height) {
-                                continue;
-                            }
                             let is_favorited = db
                                 .is_favorited_by_source(p.source_type.as_str(), &p.source_id)
                                 .unwrap_or(false);
