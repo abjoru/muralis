@@ -1,11 +1,17 @@
-use async_trait::async_trait;
+use std::sync::Arc;
+
 use serde::Deserialize;
 
-use muralis_core::error::Result;
 use muralis_core::models::{SourceType, WallpaperPreview};
-use muralis_core::sources::{AspectRatioFilter, WallpaperSource};
+use muralis_core::sources::WallpaperSource;
+use muralis_source_common::{
+    Auth, Descriptor, DetailResponse, ReqwestFetch, RestSource, SearchResponse,
+};
 
 const API_BASE: &str = "https://api.pexels.com/v1";
+/// Upstream pages consumed per logical page — Pexels is client-filtered by
+/// aspect, so over-fetch a few pages to fill a logical page.
+const BLOCK: u32 = 3;
 
 #[derive(Debug, Default, Clone, Deserialize)]
 #[serde(default)]
@@ -28,128 +34,40 @@ pub fn create_sources(
     let Some(key) = config.api_key else {
         return Vec::new();
     };
-    vec![Box::new(PexelsClient {
-        api_key: key,
-        client,
-    })]
-}
 
-pub struct PexelsClient {
-    api_key: String,
-    client: reqwest::Client,
-}
+    let desc = Descriptor {
+        source_type: "pexels",
+        display_name: "Pexels",
+        base: API_BASE,
+        auth: Auth::Header {
+            name: "Authorization",
+            value: key,
+        },
+        search_path: "/search",
+        detail_path: "/photos",
+        query_key: "query",
+        per_page_param: Some("per_page"),
+        per_page_cap: 80,
+        block: BLOCK,
+        extra_query: vec![("orientation", "landscape".into())],
+        server_aspect_param: None, // filtered client-side
+    };
 
-#[async_trait]
-impl WallpaperSource for PexelsClient {
-    fn name(&self) -> &str {
-        "Pexels"
-    }
-
-    fn source_type(&self) -> &str {
-        "pexels"
-    }
-
-    async fn search(
-        &self,
-        query: &str,
-        page: u32,
-        per_page: u32,
-        _aspect: AspectRatioFilter,
-    ) -> Result<Vec<WallpaperPreview>> {
-        let clamped = per_page.min(80);
-        let resp: PexelsSearchResponse = self
-            .client
-            .get(format!("{API_BASE}/search"))
-            .header("Authorization", &self.api_key)
-            .query(&[
-                ("query", query),
-                ("page", &page.to_string()),
-                ("per_page", &clamped.to_string()),
-                ("orientation", "landscape"),
-            ])
-            .send()
-            .await?
-            .json()
-            .await?;
-
-        let previews = resp
-            .photos
-            .into_iter()
-            .map(|p| {
-                let full_url = p.src.original.clone();
-                WallpaperPreview {
-                    source_type: SourceType::new("pexels"),
-                    source_id: p.id.to_string(),
-                    source_url: p.url,
-                    thumbnail_url: p.src.medium,
-                    full_url,
-                    width: p.width,
-                    height: p.height,
-                    tags: Vec::new(),
-                }
-            })
-            .collect();
-        Ok(previews)
-    }
-
-    async fn resolve_url(&self, url: &str) -> Result<Option<WallpaperPreview>> {
-        // Match pexels.com/photo/<slug>-<id>/
-        let id = if url.contains("pexels.com/photo/") {
-            // Extract trailing numeric ID: pexels.com/photo/some-slug-12345/
-            url.trim_end_matches('/')
-                .rsplit('-')
-                .next()
-                .and_then(|s| s.parse::<u64>().ok())
-        } else {
-            None
-        };
-
-        let Some(id) = id else {
-            return Ok(None);
-        };
-
-        let resp: PexelsPhoto = self
-            .client
-            .get(format!("{API_BASE}/photos/{id}"))
-            .header("Authorization", &self.api_key)
-            .send()
-            .await?
-            .json()
-            .await?;
-
-        Ok(Some(WallpaperPreview {
-            source_type: SourceType::new("pexels"),
-            source_id: resp.id.to_string(),
-            source_url: resp.url,
-            thumbnail_url: resp.src.medium,
-            full_url: resp.src.original,
-            width: resp.width,
-            height: resp.height,
-            tags: Vec::new(),
-        }))
-    }
-
-    async fn download(&self, preview: &WallpaperPreview) -> Result<bytes::Bytes> {
-        let bytes = self
-            .client
-            .get(&preview.full_url)
-            .send()
-            .await?
-            .bytes()
-            .await?;
-        Ok(bytes)
-    }
+    let http = Arc::new(ReqwestFetch(client));
+    vec![Box::new(
+        RestSource::<PexelsSearchResponse, PexelsPhoto>::new(desc, http),
+    )]
 }
 
 // -- API response types --
 
 #[derive(Debug, Deserialize)]
-struct PexelsSearchResponse {
+pub struct PexelsSearchResponse {
     photos: Vec<PexelsPhoto>,
 }
 
 #[derive(Debug, Deserialize)]
-struct PexelsPhoto {
+pub struct PexelsPhoto {
     id: u64,
     width: u32,
     height: u32,
@@ -163,69 +81,128 @@ struct PexelsSrc {
     medium: String,
 }
 
+impl SearchResponse for PexelsSearchResponse {
+    fn into_previews(self, source_type: &str) -> Vec<WallpaperPreview> {
+        self.photos
+            .into_iter()
+            .map(|p| p.into_preview(source_type))
+            .collect()
+    }
+}
+
+impl DetailResponse for PexelsPhoto {
+    fn into_preview(self, source_type: &str) -> WallpaperPreview {
+        WallpaperPreview {
+            source_type: SourceType::new(source_type),
+            source_id: self.id.to_string(),
+            source_url: self.url,
+            thumbnail_url: self.src.medium,
+            full_url: self.src.original,
+            width: self.width,
+            height: self.height,
+            tags: Vec::new(), // Pexels has no tags
+        }
+    }
+
+    fn parse_id(url: &str) -> Option<String> {
+        if !url.contains("pexels.com/photo/") {
+            return None;
+        }
+        // pexels.com/photo/some-slug-12345/  ->  12345
+        url.trim_end_matches('/')
+            .rsplit('-')
+            .next()
+            .and_then(|s| s.parse::<u64>().ok())
+            .map(|id| id.to_string())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use muralis_core::sources::AspectRatioFilter;
+    use muralis_source_common::testing::StubFetch;
 
     const MOCK_RESPONSE: &str = r##"{
-        "total_results": 1,
         "page": 1,
-        "per_page": 24,
+        "per_page": 80,
         "photos": [
             {
                 "id": 12345,
                 "width": 4000,
                 "height": 2500,
                 "url": "https://www.pexels.com/photo/12345/",
-                "photographer": "Test",
-                "photographer_url": "",
-                "photographer_id": 1,
-                "avg_color": "#000000",
                 "src": {
                     "original": "https://images.pexels.com/photos/12345/pexels-photo-12345.jpeg",
-                    "large2x": "https://images.pexels.com/photos/12345/pexels-photo-12345.jpeg?w=1880",
-                    "large": "https://images.pexels.com/photos/12345/pexels-photo-12345.jpeg?w=940",
-                    "medium": "https://images.pexels.com/photos/12345/pexels-photo-12345.jpeg?w=350",
-                    "small": "https://images.pexels.com/photos/12345/pexels-photo-12345.jpeg?w=130",
-                    "portrait": "",
-                    "landscape": "",
-                    "tiny": ""
-                },
-                "liked": false,
-                "alt": "Test photo"
+                    "medium": "https://images.pexels.com/photos/12345/pexels-photo-12345.jpeg?w=350"
+                }
             }
         ]
     }"##;
 
-    #[test]
-    fn test_parse_pexels_response() {
-        let resp: PexelsSearchResponse = serde_json::from_str(MOCK_RESPONSE).unwrap();
-        assert_eq!(resp.photos.len(), 1);
-        let p = &resp.photos[0];
-        assert_eq!(p.id, 12345);
-        assert_eq!(p.width, 4000);
+    fn source(http: Arc<StubFetch>) -> RestSource<PexelsSearchResponse, PexelsPhoto> {
+        let desc = Descriptor {
+            source_type: "pexels",
+            display_name: "Pexels",
+            base: API_BASE,
+            auth: Auth::Header {
+                name: "Authorization",
+                value: "RAWKEY".into(),
+            },
+            search_path: "/search",
+            detail_path: "/photos",
+            query_key: "query",
+            per_page_param: Some("per_page"),
+            per_page_cap: 80,
+            block: BLOCK,
+            extra_query: vec![("orientation", "landscape".into())],
+            server_aspect_param: None,
+        };
+        RestSource::new(desc, http)
     }
 
-    #[test]
-    fn test_pexels_to_preview() {
-        let resp: PexelsSearchResponse = serde_json::from_str(MOCK_RESPONSE).unwrap();
-        let previews: Vec<WallpaperPreview> = resp
-            .photos
-            .into_iter()
-            .map(|p| WallpaperPreview {
-                source_type: SourceType::new("pexels"),
-                source_id: p.id.to_string(),
-                source_url: p.url,
-                thumbnail_url: p.src.medium,
-                full_url: p.src.original,
-                width: p.width,
-                height: p.height,
-                tags: Vec::new(),
-            })
-            .collect();
+    #[tokio::test]
+    async fn maps_response_to_preview_with_empty_tags() {
+        let http = Arc::new(StubFetch::ok_pages(&[
+            MOCK_RESPONSE,
+            r#"{"photos":[]}"#,
+            r#"{"photos":[]}"#,
+        ]));
+        let previews = source(http)
+            .search("x", 1, 24, AspectRatioFilter::All)
+            .await
+            .unwrap();
 
         assert_eq!(previews.len(), 1);
         assert_eq!(previews[0].source_id, "12345");
         assert_eq!(previews[0].width, 4000);
+        assert!(previews[0].tags.is_empty());
+    }
+
+    #[tokio::test]
+    async fn search_uses_raw_header_auth_and_per_page_cap() {
+        let http = Arc::new(StubFetch::ok(MOCK_RESPONSE));
+        source(http.clone())
+            .search("waves", 1, 24, AspectRatioFilter::All)
+            .await
+            .unwrap();
+
+        let call = http.last_call();
+        assert_eq!(call.url, "https://api.pexels.com/v1/search");
+        assert_eq!(call.header_value("Authorization"), Some("RAWKEY")); // no prefix
+        assert_eq!(call.query_value("query"), Some("waves"));
+        assert_eq!(call.query_value("per_page"), Some("80"));
+    }
+
+    #[test]
+    fn parses_numeric_id_from_url() {
+        assert_eq!(
+            PexelsPhoto::parse_id("https://www.pexels.com/photo/some-slug-12345/"),
+            Some("12345".into())
+        );
+        assert_eq!(
+            PexelsPhoto::parse_id("https://unsplash.com/photos/abc"),
+            None
+        );
     }
 }

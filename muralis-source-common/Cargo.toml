@@ -1,16 +1,16 @@
 [package]
-name = "muralis-source-unsplash"
+name = "muralis-source-common"
 edition.workspace = true
 version.workspace = true
 license.workspace = true
 
 [dependencies]
 muralis-core = { path = "../muralis-core" }
-muralis-source-common = { path = "../muralis-source-common" }
+async-trait = { workspace = true }
 reqwest = { workspace = true }
 serde = { workspace = true }
-toml = { workspace = true }
+serde_json = { workspace = true }
+bytes = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true }
-serde_json = { workspace = true }
