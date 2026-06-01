@@ -34,8 +34,12 @@ enabled = false
 
 # Booru sources (anime/NSFW track) — one [[sources.booru]] per host.
 #   name   = per-host identity (also the dedup key). Known hosts only for now:
-#            danbooru, yandere, konachan.
-#   flavor = API dialect: "danbooru" or "moebooru" (yande.re + Konachan).
+#            danbooru, yandere, konachan, gelbooru, rule34, safebooru, realbooru.
+#   flavor = API dialect: "danbooru", "moebooru" (yande.re + Konachan), or
+#            "gelbooru" (gelbooru.com + clones rule34/safebooru/realbooru).
+#   Gelbooru-flavor hosts need api_key + user_id (mandatory on gelbooru.com
+#   since 2025; anonymous = 401). Generate them at gelbooru.com → Account →
+#   Options → API Access Credentials.
 # All disabled by example. Nothing NSFW can surface until you BOTH enable a
 # source AND raise [general] content_safety above "safe" (see issue #7 docs):
 # at the default "safe" ceiling every booru is forced to its safest rating.
@@ -54,6 +58,20 @@ enabled = false
 # enabled = false
 # name = "konachan"
 # flavor = "moebooru"
+#
+# [[sources.booru]]  # NSFW — gelbooru needs api_key + user_id
+# enabled = false
+# name = "gelbooru"
+# flavor = "gelbooru"
+# api_key = "YOUR_GELBOORU_API_KEY"
+# user_id = "YOUR_GELBOORU_USER_ID"
+#
+# [[sources.booru]]  # NSFW — rule34 is flavor=gelbooru on a different host
+# enabled = false
+# name = "rule34"
+# flavor = "gelbooru"
+# api_key = "YOUR_RULE34_API_KEY"
+# user_id = "YOUR_RULE34_USER_ID"
 
 [filter]
 min_width = 1920

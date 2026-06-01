@@ -39,6 +39,12 @@ pub struct BooruConfig {
     /// only, never past the ceiling) is a follow-up.
     #[serde(default)]
     pub rating: Option<String>,
+    /// Gelbooru-flavor credentials. Both are mandatory on gelbooru.com since
+    /// 2025 (anonymous search returns 401); clones (rule34 etc.) ignore them.
+    #[serde(default)]
+    pub api_key: Option<String>,
+    #[serde(default)]
+    pub user_id: Option<String>,
 }
 
 pub fn create_sources(
@@ -86,6 +92,16 @@ pub fn create_sources(
                     RestSource::<MoebooruResponse, MoebooruResponse>::new(desc, http.clone()),
                 ));
             }
+            "gelbooru" => {
+                let mut desc = descriptor(&cfg.name, base, "/index.php", "/index.php", tag_prefix);
+                desc.auth = gelbooru_auth(&cfg);
+                desc.extra_query = gelbooru_query_params();
+                desc.page_param = "pid"; // gelbooru paginates with 0-indexed pid
+                desc.page_base = 0;
+                out.push(Box::new(
+                    RestSource::<GelbooruResponse, GelbooruResponse>::new(desc, http.clone()),
+                ));
+            }
             other => tracing::warn!("booru: unknown flavor {other:?} for {:?}", cfg.name),
         }
     }
@@ -115,6 +131,8 @@ fn descriptor(
         block: BLOCK,
         extra_query: Vec::new(),
         server_aspect_param: None,
+        page_param: "page",
+        page_base: 1,
     }
 }
 
@@ -126,6 +144,11 @@ fn default_base(name: &str) -> Option<&'static str> {
         "danbooru" => "https://danbooru.donmai.us",
         "yandere" | "yande.re" => "https://yande.re",
         "konachan" => "https://konachan.com",
+        // gelbooru flavor: gelbooru.com plus its clones, which share the API.
+        "gelbooru" => "https://gelbooru.com",
+        "rule34" => "https://rule34.xxx",
+        "safebooru" => "https://safebooru.org",
+        "realbooru" => "https://realbooru.com",
         _ => return None,
     })
 }
@@ -143,6 +166,12 @@ fn rating_prefix(flavor: &str, ceiling: ContentSafety) -> Option<String> {
         },
         "moebooru" => match ceiling {
             ContentSafety::Safe => "rating:safe",
+            ContentSafety::Moderate => "-rating:explicit",
+            ContentSafety::Nsfw => "",
+        },
+        // Modern gelbooru uses general/sensitive/questionable/explicit.
+        "gelbooru" => match ceiling {
+            ContentSafety::Safe => "rating:general",
             ContentSafety::Moderate => "-rating:explicit",
             ContentSafety::Nsfw => "",
         },
@@ -315,6 +344,126 @@ impl DetailResponse for MoebooruResponse {
     }
 }
 
+// -- gelbooru flavor (gelbooru.com + clones rule34/safebooru/realbooru):
+//    `/index.php?page=dapi&s=post&q=index&json=1` → `{"post":[…]}`; `pid`
+//    0-indexed pagination; detail by `&id=N` query (no path-based id) --
+
+#[derive(Debug, Deserialize)]
+pub struct GelbooruResponse {
+    // Absent (not `[]`) when there are no results, so default to empty.
+    #[serde(default)]
+    post: Vec<GelbooruPost>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct GelbooruPost {
+    id: u64,
+    #[serde(default)]
+    width: u32,
+    #[serde(default)]
+    height: u32,
+    #[serde(default)]
+    file_url: String,
+    #[serde(default)]
+    sample_url: String,
+    #[serde(default)]
+    preview_url: String,
+    #[serde(default)]
+    tags: String,
+}
+
+impl GelbooruPost {
+    fn into_preview(self, source_type: &str) -> WallpaperPreview {
+        let full = first_nonempty([self.file_url, self.sample_url, self.preview_url]);
+        WallpaperPreview {
+            source_type: SourceType::new(source_type),
+            source_id: self.id.to_string(),
+            source_url: full.full.clone(),
+            thumbnail_url: full.thumb,
+            full_url: full.full,
+            width: self.width,
+            height: self.height,
+            tags: split_tags(&self.tags),
+        }
+    }
+}
+
+impl SearchResponse for GelbooruResponse {
+    fn into_previews(self, source_type: &str) -> Vec<WallpaperPreview> {
+        self.post
+            .into_iter()
+            .map(|p| p.into_preview(source_type))
+            .collect()
+    }
+}
+
+impl DetailResponse for GelbooruResponse {
+    fn into_preview(self, source_type: &str) -> WallpaperPreview {
+        self.post
+            .into_iter()
+            .next()
+            .map(|p| p.into_preview(source_type))
+            .unwrap_or_else(|| WallpaperPreview {
+                source_type: SourceType::new(source_type),
+                source_id: String::new(),
+                source_url: String::new(),
+                thumbnail_url: String::new(),
+                full_url: String::new(),
+                width: 0,
+                height: 0,
+                tags: Vec::new(),
+            })
+    }
+    fn parse_id(url: &str) -> Option<String> {
+        // gelbooru post pages are `index.php?page=post&s=view&id=N`.
+        id_from_query(url, "id")
+    }
+    const HOST_SCOPED: bool = true;
+    fn detail_request(
+        base: &str,
+        _detail_path: &str,
+        search_path: &str,
+        id: &str,
+    ) -> (String, Vec<(&'static str, String)>) {
+        let mut q = gelbooru_query_params();
+        q.push(("id", id.to_string()));
+        (format!("{base}{search_path}"), q)
+    }
+}
+
+/// `Auth` for a gelbooru instance: both `api_key` and `user_id` together when
+/// configured (mandatory on gelbooru.com), else `None` (clones allow anonymous).
+fn gelbooru_auth(cfg: &BooruConfig) -> Auth {
+    match (&cfg.api_key, &cfg.user_id) {
+        (Some(k), Some(u)) => {
+            Auth::QueryParams(vec![("api_key", k.clone()), ("user_id", u.clone())])
+        }
+        _ => Auth::None,
+    }
+}
+
+/// The constant params that select gelbooru's `dapi` JSON post-index endpoint.
+fn gelbooru_query_params() -> Vec<(&'static str, String)> {
+    vec![
+        ("page", "dapi".to_string()),
+        ("s", "post".to_string()),
+        ("q", "index".to_string()),
+        ("json", "1".to_string()),
+    ]
+}
+
+/// Value of query parameter `key` in a URL (`…?s=view&id=42#x` with key `id` →
+/// `42`), or `None` if the key is absent or empty.
+fn id_from_query(url: &str, key: &str) -> Option<String> {
+    let query = url.split_once('?')?.1;
+    query
+        .split('&')
+        .filter_map(|kv| kv.split_once('='))
+        .find(|(k, _)| *k == key)
+        .map(|(_, v)| v.split('#').next().unwrap_or(v).to_string())
+        .filter(|v| !v.is_empty())
+}
+
 // -- shared mapping helpers --
 
 struct Urls {
@@ -383,6 +532,29 @@ mod tests {
             "/post",
             rating_prefix("moebooru", ctx.content_safety),
         );
+        RestSource::new(desc, http)
+    }
+
+    fn gelbooru(
+        name: &str,
+        base: &'static str,
+        http: Arc<StubFetch>,
+        ctx: &SourceContext,
+    ) -> RestSource<GelbooruResponse, GelbooruResponse> {
+        let mut desc = descriptor(
+            name,
+            base,
+            "/index.php",
+            "/index.php",
+            rating_prefix("gelbooru", ctx.content_safety),
+        );
+        desc.auth = Auth::QueryParams(vec![
+            ("api_key", "KEY".to_string()),
+            ("user_id", "42".to_string()),
+        ]);
+        desc.extra_query = gelbooru_query_params();
+        desc.page_param = "pid";
+        desc.page_base = 0;
         RestSource::new(desc, http)
     }
 
@@ -511,6 +683,102 @@ mod tests {
         assert!(http.calls().is_empty(), "must not hit the network");
     }
 
+    const GELBOORU_BODY: &str = r#"{"post":[
+        {"id":99,"width":3840,"height":1600,
+         "file_url":"https://img3.gelbooru.com/images/99.jpg",
+         "sample_url":"https://img3.gelbooru.com/samples/99.jpg",
+         "preview_url":"https://img3.gelbooru.com/thumbnails/99.jpg",
+         "tags":"scenery wide"}
+    ]}"#;
+
+    #[tokio::test]
+    async fn gelbooru_parses_post_envelope_folds_rating_and_pages_zero_indexed() {
+        let http = Arc::new(StubFetch::ok_pages(&[
+            GELBOORU_BODY,
+            r#"{"post":[]}"#,
+            r#"{"post":[]}"#,
+        ]));
+        let previews = gelbooru(
+            "gelbooru",
+            "https://gelbooru.com",
+            http.clone(),
+            &safe_ctx(),
+        )
+        .search("scenery", 1, 24, AspectRatioFilter::All)
+        .await
+        .unwrap();
+
+        assert_eq!(previews.len(), 1);
+        assert_eq!(previews[0].source_id, "99");
+        assert_eq!(previews[0].width, 3840);
+        assert_eq!(
+            previews[0].full_url,
+            "https://img3.gelbooru.com/images/99.jpg"
+        );
+
+        let calls = http.calls();
+        // both credentials injected into the query (dual-credential auth)
+        assert_eq!(calls[0].query_value("api_key"), Some("KEY"));
+        assert_eq!(calls[0].query_value("user_id"), Some("42"));
+        assert_eq!(calls[0].query_value("json"), Some("1"));
+        // safe ceiling → rating:general folded ahead of the user query
+        assert_eq!(calls[0].query_value("tags"), Some("rating:general scenery"));
+        // 0-indexed pid: logical page 1, block 3 → pid 0,1,2
+        let pids: Vec<_> = calls
+            .iter()
+            .map(|c| c.query_value("pid").unwrap().to_string())
+            .collect();
+        assert_eq!(pids, vec!["0", "1", "2"]);
+    }
+
+    #[tokio::test]
+    async fn gelbooru_resolves_via_id_query() {
+        let http = Arc::new(StubFetch::ok(GELBOORU_BODY));
+        let preview = gelbooru(
+            "gelbooru",
+            "https://gelbooru.com",
+            http.clone(),
+            &safe_ctx(),
+        )
+        .resolve_url("https://gelbooru.com/index.php?page=post&s=view&id=99")
+        .await
+        .unwrap()
+        .expect("gelbooru resolves its own host");
+
+        assert_eq!(preview.source_id, "99");
+        let call = http.last_call();
+        assert_eq!(call.url, "https://gelbooru.com/index.php");
+        assert_eq!(call.query_value("id"), Some("99"));
+        assert_eq!(call.query_value("api_key"), Some("KEY"));
+    }
+
+    #[test]
+    fn create_sources_builds_gelbooru_and_rule34_multi_host() {
+        let toml_str = r#"
+            [[booru]]
+            name = "gelbooru"
+            flavor = "gelbooru"
+            enabled = true
+            api_key = "abc"
+            user_id = "7"
+
+            [[booru]]
+            name = "rule34"
+            flavor = "gelbooru"
+            enabled = true
+            api_key = "def"
+            user_id = "9"
+        "#;
+        let table: toml::Table = toml_str.parse().unwrap();
+        let sources = create_sources(&table, reqwest::Client::new(), &safe_ctx());
+        // both gelbooru-flavor hosts build on different bases (multi-host)
+        let names: Vec<_> = sources
+            .iter()
+            .map(|s| s.source_type().to_string())
+            .collect();
+        assert_eq!(names, vec!["gelbooru", "rule34"]);
+    }
+
     #[test]
     fn rating_prefix_tracks_the_ceiling() {
         assert_eq!(
@@ -527,6 +795,15 @@ mod tests {
             Some("rating:safe")
         );
         assert_eq!(rating_prefix("moebooru", ContentSafety::Nsfw), None);
+        assert_eq!(
+            rating_prefix("gelbooru", ContentSafety::Safe).as_deref(),
+            Some("rating:general")
+        );
+        assert_eq!(
+            rating_prefix("gelbooru", ContentSafety::Moderate).as_deref(),
+            Some("-rating:explicit")
+        );
+        assert_eq!(rating_prefix("gelbooru", ContentSafety::Nsfw), None);
     }
 
     #[test]

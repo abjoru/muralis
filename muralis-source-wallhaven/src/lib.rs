@@ -98,6 +98,8 @@ pub fn create_sources(
         block: 1, // server filters by aspect, so ~every result matches
         extra_query: vec![("categories", config.categories), ("purity", purity)],
         server_aspect_param: Some("ratios"),
+        page_param: "page",
+        page_base: 1,
     };
 
     let http = Arc::new(ReqwestFetch(client));
@@ -220,6 +222,8 @@ mod tests {
             block: 1,
             extra_query: vec![("categories", "100".into()), ("purity", "100".into())],
             server_aspect_param: Some("ratios"),
+            page_param: "page",
+            page_base: 1,
         };
         RestSource::new(desc, http)
     }
@@ -292,6 +296,8 @@ mod tests {
             block: 1,
             extra_query: vec![("categories", "100".into()), ("purity", clamped)],
             server_aspect_param: Some("ratios"),
+            page_param: "page",
+            page_base: 1,
         };
         let http = Arc::new(StubFetch::ok(MOCK_RESPONSE));
         let src: RestSource<WallhavenResponse, WallhavenDetailResponse> =

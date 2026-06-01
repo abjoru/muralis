@@ -57,6 +57,8 @@ pub fn create_sources(
         block: BLOCK,
         extra_query: extra_query(ctx),
         server_aspect_param: None, // Pixabay has no aspect param; filter client-side
+        page_param: "page",
+        page_base: 1,
     };
 
     let http = Arc::new(ReqwestFetch(client));
@@ -224,6 +226,8 @@ mod tests {
             block: BLOCK,
             extra_query: extra_query(ctx),
             server_aspect_param: None,
+            page_param: "page",
+            page_base: 1,
         };
         RestSource::new(desc, http)
     }

@@ -61,6 +61,10 @@ pub enum Auth {
         key: &'static str,
         value: Option<String>,
     },
+    /// Multiple query credentials sent together — Gelbooru requires both
+    /// `api_key` and `user_id` (mandatory since 2025; anonymous = 401). Secrets
+    /// live here, never in `extra_query`.
+    QueryParams(Vec<(&'static str, String)>),
     /// Sent as a header, e.g. unsplash `Authorization: Client-ID …`.
     Header {
         name: &'static str,
@@ -98,6 +102,12 @@ pub struct Descriptor {
     /// When `Some(key)`, the server filters by aspect via this query param
     /// (wallhaven `ratios`); client-side filtering is then skipped.
     pub server_aspect_param: Option<&'static str>,
+    /// Query key for the page number. Almost always `"page"`; Gelbooru uses
+    /// `"pid"`.
+    pub page_param: &'static str,
+    /// First page index the API uses. `1` for most sources; Gelbooru's `pid` is
+    /// `0`-indexed.
+    pub page_base: u32,
 }
 
 /// A source's search-response envelope.
@@ -195,12 +205,18 @@ where
 
         let mut out: Vec<WallpaperPreview> = Vec::new();
         for upstream in first..=last {
-            let upstream_s = upstream.to_string();
+            // Map the internal 1-indexed upstream page onto the API's own page
+            // numbering: most APIs are 1-indexed (`page_base` 1); Gelbooru's
+            // `pid` is 0-indexed (`page_base` 0).
+            let page_num = upstream - 1 + self.desc.page_base;
+            let page_num_s = page_num.to_string();
             let cap_s = self.desc.per_page_cap.to_string();
             let q_value: &str = composed_query.as_deref().unwrap_or(query);
 
-            let mut query_params: Vec<(&str, &str)> =
-                vec![(self.desc.query_key, q_value), ("page", &upstream_s)];
+            let mut query_params: Vec<(&str, &str)> = vec![
+                (self.desc.query_key, q_value),
+                (self.desc.page_param, &page_num_s),
+            ];
             if let Some(pp) = self.desc.per_page_param {
                 query_params.push((pp, &cap_s));
             }
@@ -217,6 +233,11 @@ where
                     key,
                     value: Some(v),
                 } => query_params.push((key, v.as_str())),
+                Auth::QueryParams(pairs) => {
+                    for (k, v) in pairs {
+                        query_params.push((k, v.as_str()));
+                    }
+                }
                 Auth::Header { name, value } => headers.push((name, value.as_str())),
                 _ => {}
             }
@@ -274,6 +295,11 @@ where
                 key,
                 value: Some(v),
             } => query_params.push((key, v.as_str())),
+            Auth::QueryParams(pairs) => {
+                for (k, v) in pairs {
+                    query_params.push((k, v.as_str()));
+                }
+            }
             Auth::Header { name, value } => headers.push((name, value.as_str())),
             _ => {}
         }
@@ -393,6 +419,8 @@ mod tests {
             block: 1,
             extra_query: Vec::new(),
             server_aspect_param: None,
+            page_param: "page",
+            page_base: 1,
         }
     }
 
@@ -615,6 +643,50 @@ mod tests {
         src.search("", 1, 24, AspectRatioFilter::All).await.unwrap();
 
         assert_eq!(http.last_call().query_value("tags"), Some("rating:safe"));
+    }
+
+    #[tokio::test]
+    async fn auth_query_params_injects_all_pairs() {
+        let mut desc = descriptor();
+        desc.auth = Auth::QueryParams(vec![("api_key", "abc".into()), ("user_id", "7".into())]);
+        let http = Arc::new(StubFetch::ok(r#"{"items":[]}"#));
+        let src: RestSource<FixSearch, FixItem> = RestSource::new(desc, http.clone());
+
+        src.search("x", 1, 24, AspectRatioFilter::All)
+            .await
+            .unwrap();
+
+        let call = http.last_call();
+        assert_eq!(call.query_value("api_key"), Some("abc"));
+        assert_eq!(call.query_value("user_id"), Some("7"));
+    }
+
+    #[tokio::test]
+    async fn page_param_and_base_map_zero_indexed_pages() {
+        let mut desc = descriptor();
+        desc.page_param = "pid";
+        desc.page_base = 0;
+        desc.block = 3;
+        let http = Arc::new(StubFetch::ok_pages(&[
+            r#"{"items":[]}"#,
+            r#"{"items":[]}"#,
+            r#"{"items":[]}"#,
+        ]));
+        let src: RestSource<FixSearch, FixItem> = RestSource::new(desc, http.clone());
+
+        // logical page 1, block 3, 0-indexed → pid 0,1,2 under the "pid" key
+        src.search("x", 1, 100, AspectRatioFilter::All)
+            .await
+            .unwrap();
+
+        let pids: Vec<_> = http
+            .calls()
+            .iter()
+            .map(|c| c.query_value("pid").unwrap().to_string())
+            .collect();
+        assert_eq!(pids, vec!["0", "1", "2"]);
+        // the default "page" key is unused once page_param is overridden
+        assert_eq!(http.last_call().query_value("page"), None);
     }
 
     // -- host-scoped resolve fixture: parse_id is path-only, host check is the
