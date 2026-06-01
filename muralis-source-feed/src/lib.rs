@@ -9,7 +9,7 @@ use tokio::sync::Semaphore;
 
 use muralis_core::error::Result;
 use muralis_core::models::{SourceType, WallpaperPreview};
-use muralis_core::sources::{AspectRatioFilter, WallpaperSource};
+use muralis_core::sources::{AspectRatioFilter, SourceContext, WallpaperSource};
 
 static IMG_SEL: LazyLock<Selector> =
     LazyLock::new(|| Selector::parse("img[src]").expect("valid selector"));
@@ -31,6 +31,7 @@ pub struct FeedConfig {
 pub fn create_sources(
     table: &toml::Table,
     client: reqwest::Client,
+    _ctx: &SourceContext,
 ) -> Vec<Box<dyn WallpaperSource>> {
     let Some(val) = table.get("feeds") else {
         return Vec::new();
@@ -444,7 +445,7 @@ mod tests {
         "#;
         let table: toml::Table = toml_str.parse().unwrap();
         let client = reqwest::Client::new();
-        let sources = create_sources(&table, client);
+        let sources = create_sources(&table, client, &SourceContext::default());
         assert_eq!(sources.len(), 1);
         assert_eq!(sources[0].name(), "active");
     }

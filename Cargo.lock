@@ -1616,6 +1616,7 @@ dependencies = [
  "muralis-core",
  "muralis-source-feed",
  "muralis-source-pexels",
+ "muralis-source-pixabay",
  "muralis-source-unsplash",
  "muralis-source-wallhaven",
  "reqwest",
@@ -1698,6 +1699,19 @@ dependencies = [
 
 [[package]]
 name = "muralis-source-pexels"
+version = "0.2.4"
+dependencies = [
+ "muralis-core",
+ "muralis-source-common",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tokio",
+ "toml",
+]
+
+[[package]]
+name = "muralis-source-pixabay"
 version = "0.2.4"
 dependencies = [
  "muralis-core",

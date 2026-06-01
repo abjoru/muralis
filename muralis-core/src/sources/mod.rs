@@ -5,6 +5,9 @@ use async_trait::async_trait;
 use crate::error::Result;
 use crate::models::WallpaperPreview;
 
+pub mod context;
+pub use context::{ContentSafety, SourceContext};
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AspectRatioFilter {
     All,

@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 use crate::error::{MuralisError, Result};
 use crate::models::{BackendType, DisplayMode};
 use crate::paths::MuralisPaths;
+use crate::sources::ContentSafety;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -69,6 +70,10 @@ pub struct GeneralConfig {
     pub backend: BackendType,
     pub cache_max_mb: u64,
     pub thumbnail_zoom: f32,
+    /// Global content-safety ceiling (ADR 0002). Default `safe` — the panic
+    /// switch that forces every source to its safest native setting.
+    #[serde(default)]
+    pub content_safety: ContentSafety,
 }
 
 impl Default for GeneralConfig {
@@ -77,6 +82,7 @@ impl Default for GeneralConfig {
             backend: BackendType::Hyprpaper,
             cache_max_mb: 500,
             thumbnail_zoom: 1.0,
+            content_safety: ContentSafety::default(),
         }
     }
 }

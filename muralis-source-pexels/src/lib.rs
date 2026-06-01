@@ -3,7 +3,7 @@ use std::sync::Arc;
 use serde::Deserialize;
 
 use muralis_core::models::{SourceType, WallpaperPreview};
-use muralis_core::sources::WallpaperSource;
+use muralis_core::sources::{SourceContext, WallpaperSource};
 use muralis_source_common::{
     Auth, Descriptor, DetailResponse, ReqwestFetch, RestSource, SearchResponse,
 };
@@ -23,6 +23,7 @@ pub struct PexelsConfig {
 pub fn create_sources(
     table: &toml::Table,
     client: reqwest::Client,
+    _ctx: &SourceContext,
 ) -> Vec<Box<dyn WallpaperSource>> {
     let Some(val) = table.get("pexels") else {
         return Vec::new();

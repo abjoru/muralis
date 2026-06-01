@@ -7,6 +7,7 @@ members = [
     "muralis-source-wallhaven",
     "muralis-source-unsplash",
     "muralis-source-pexels",
+    "muralis-source-pixabay",
     "muralis-source-feed",
 ]
 resolver = "2"
