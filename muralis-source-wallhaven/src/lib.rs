@@ -3,12 +3,48 @@ use std::sync::Arc;
 use serde::Deserialize;
 
 use muralis_core::models::{SourceType, WallpaperPreview};
-use muralis_core::sources::WallpaperSource;
+use muralis_core::sources::{ContentSafety, SourceContext, WallpaperSource};
 use muralis_source_common::{
     Auth, Descriptor, DetailResponse, ReqwestFetch, RestSource, SearchResponse,
 };
 
 const API_BASE: &str = "https://wallhaven.cc/api/v1";
+
+/// Map the global content-safety ceiling onto wallhaven's 3-bit `purity`
+/// string (SFW / Sketchy / NSFW). The ceiling is a *cap*: we bitwise-AND the
+/// configured purity with the ceiling's allowed bits, so per-source config can
+/// only tighten below the ceiling, never loosen past it (ADR 0002). A stale
+/// `purity="111"` under global `safe` clamps to `100` (SFW only) — no NSFW leak.
+fn effective_purity(configured: &str, ceiling: ContentSafety) -> String {
+    let cap = match ceiling {
+        ContentSafety::Safe => 0b100,
+        ContentSafety::Moderate => 0b110,
+        ContentSafety::Nsfw => 0b111,
+    };
+    let cfg = parse_purity_bits(configured);
+    let bits = cfg & cap;
+    // Never emit an all-zero purity (wallhaven would reject it); fall back to
+    // SFW-only, which is always within any ceiling.
+    let bits = if bits == 0 { 0b100 } else { bits };
+    format!("{}{}{}", (bits >> 2) & 1, (bits >> 1) & 1, bits & 1)
+}
+
+/// Parse a wallhaven purity string ("100", "110", …) into a 3-bit mask. Any
+/// non-`"1"`/`"0"` char is treated as `0`; short/long strings are tolerated by
+/// reading at most the first three chars. Defaults to SFW-only on garbage.
+fn parse_purity_bits(s: &str) -> u8 {
+    let mut bits = 0u8;
+    for (i, c) in s.chars().take(3).enumerate() {
+        if c == '1' {
+            bits |= 1 << (2 - i);
+        }
+    }
+    if bits == 0 {
+        0b100
+    } else {
+        bits
+    }
+}
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
@@ -33,6 +69,7 @@ impl Default for WallhavenConfig {
 pub fn create_sources(
     table: &toml::Table,
     client: reqwest::Client,
+    ctx: &SourceContext,
 ) -> Vec<Box<dyn WallpaperSource>> {
     let Some(val) = table.get("wallhaven") else {
         return Vec::new();
@@ -42,9 +79,11 @@ pub fn create_sources(
         return Vec::new();
     }
 
+    let purity = effective_purity(&config.purity, ctx.content_safety);
+
     let desc = Descriptor {
-        source_type: "wallhaven",
-        display_name: "Wallhaven",
+        source_type: "wallhaven".into(),
+        display_name: "Wallhaven".into(),
         base: API_BASE,
         auth: Auth::QueryParam {
             key: "apikey",
@@ -53,11 +92,14 @@ pub fn create_sources(
         search_path: "/search",
         detail_path: "/w",
         query_key: "q",
+        tag_prefix: None,
         per_page_param: None, // wallhaven uses a fixed server page size
         per_page_cap: 24,
         block: 1, // server filters by aspect, so ~every result matches
-        extra_query: vec![("categories", config.categories), ("purity", config.purity)],
+        extra_query: vec![("categories", config.categories), ("purity", purity)],
         server_aspect_param: Some("ratios"),
+        page_param: "page",
+        page_base: 1,
     };
 
     let http = Arc::new(ReqwestFetch(client));
@@ -164,8 +206,8 @@ mod tests {
 
     fn source(http: Arc<StubFetch>) -> RestSource<WallhavenResponse, WallhavenDetailResponse> {
         let desc = Descriptor {
-            source_type: "wallhaven",
-            display_name: "Wallhaven",
+            source_type: "wallhaven".into(),
+            display_name: "Wallhaven".into(),
             base: API_BASE,
             auth: Auth::QueryParam {
                 key: "apikey",
@@ -174,11 +216,14 @@ mod tests {
             search_path: "/search",
             detail_path: "/w",
             query_key: "q",
+            tag_prefix: None,
             per_page_param: None,
             per_page_cap: 24,
             block: 1,
             extra_query: vec![("categories", "100".into()), ("purity", "100".into())],
             server_aspect_param: Some("ratios"),
+            page_param: "page",
+            page_base: 1,
         };
         RestSource::new(desc, http)
     }
@@ -211,6 +256,58 @@ mod tests {
         assert_eq!(call.query_value("categories"), Some("100"));
         assert_eq!(call.query_value("ratios"), Some("16x9"));
         assert_eq!(call.query_value("per_page"), None); // not sent for wallhaven
+    }
+
+    #[test]
+    fn effective_purity_clamps_to_ceiling() {
+        // global safe forces SFW-only regardless of a stale config purity
+        assert_eq!(effective_purity("111", ContentSafety::Safe), "100");
+        assert_eq!(effective_purity("110", ContentSafety::Safe), "100");
+        // moderate allows up to sketchy, strips NSFW bit
+        assert_eq!(effective_purity("111", ContentSafety::Moderate), "110");
+        // nsfw lets the configured purity through unchanged
+        assert_eq!(effective_purity("111", ContentSafety::Nsfw), "111");
+        // config can still tighten below the ceiling
+        assert_eq!(effective_purity("100", ContentSafety::Nsfw), "100");
+        // garbage / empty config falls back to SFW-only
+        assert_eq!(effective_purity("", ContentSafety::Nsfw), "100");
+        assert_eq!(effective_purity("000", ContentSafety::Nsfw), "100");
+    }
+
+    #[tokio::test]
+    async fn search_request_uses_clamped_purity_under_safe_ceiling() {
+        // a source whose purity was clamped by the global `safe` ceiling must
+        // send purity=100 to wallhaven — no NSFW leak.
+        let clamped = effective_purity("111", ContentSafety::Safe);
+        let desc = Descriptor {
+            source_type: "wallhaven".into(),
+            display_name: "Wallhaven".into(),
+            base: API_BASE,
+            auth: Auth::QueryParam {
+                key: "apikey",
+                value: Some("KEY".into()),
+            },
+            search_path: "/search",
+            detail_path: "/w",
+            query_key: "q",
+            tag_prefix: None,
+            per_page_param: None,
+            per_page_cap: 24,
+            block: 1,
+            extra_query: vec![("categories", "100".into()), ("purity", clamped)],
+            server_aspect_param: Some("ratios"),
+            page_param: "page",
+            page_base: 1,
+        };
+        let http = Arc::new(StubFetch::ok(MOCK_RESPONSE));
+        let src: RestSource<WallhavenResponse, WallhavenDetailResponse> =
+            RestSource::new(desc, http.clone());
+
+        src.search("x", 1, 24, AspectRatioFilter::All)
+            .await
+            .unwrap();
+
+        assert_eq!(http.last_call().query_value("purity"), Some("100"));
     }
 
     #[test]

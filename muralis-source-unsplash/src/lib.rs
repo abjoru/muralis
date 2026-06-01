@@ -3,7 +3,7 @@ use std::sync::Arc;
 use serde::Deserialize;
 
 use muralis_core::models::{SourceType, WallpaperPreview};
-use muralis_core::sources::WallpaperSource;
+use muralis_core::sources::{SourceContext, WallpaperSource};
 use muralis_source_common::{
     Auth, Descriptor, DetailResponse, ReqwestFetch, RestSource, SearchResponse,
 };
@@ -23,6 +23,7 @@ pub struct UnsplashConfig {
 pub fn create_sources(
     table: &toml::Table,
     client: reqwest::Client,
+    _ctx: &SourceContext,
 ) -> Vec<Box<dyn WallpaperSource>> {
     let Some(val) = table.get("unsplash") else {
         return Vec::new();
@@ -36,8 +37,8 @@ pub fn create_sources(
     };
 
     let desc = Descriptor {
-        source_type: "unsplash",
-        display_name: "Unsplash",
+        source_type: "unsplash".into(),
+        display_name: "Unsplash".into(),
         base: API_BASE,
         auth: Auth::Header {
             name: "Authorization",
@@ -46,11 +47,14 @@ pub fn create_sources(
         search_path: "/search/photos",
         detail_path: "/photos",
         query_key: "query",
+        tag_prefix: None,
         per_page_param: Some("per_page"),
         per_page_cap: 30,
         block: BLOCK,
         extra_query: vec![("orientation", "landscape".into())],
         server_aspect_param: None, // filtered client-side
+        page_param: "page",
+        page_base: 1,
     };
 
     let http = Arc::new(ReqwestFetch(client));
@@ -154,8 +158,8 @@ mod tests {
 
     fn source(http: Arc<StubFetch>) -> RestSource<UnsplashSearchResponse, UnsplashPhoto> {
         let desc = Descriptor {
-            source_type: "unsplash",
-            display_name: "Unsplash",
+            source_type: "unsplash".into(),
+            display_name: "Unsplash".into(),
             base: API_BASE,
             auth: Auth::Header {
                 name: "Authorization",
@@ -164,11 +168,14 @@ mod tests {
             search_path: "/search/photos",
             detail_path: "/photos",
             query_key: "query",
+            tag_prefix: None,
             per_page_param: Some("per_page"),
             per_page_cap: 30,
             block: BLOCK,
             extra_query: vec![("orientation", "landscape".into())],
             server_aspect_param: None,
+            page_param: "page",
+            page_base: 1,
         };
         RestSource::new(desc, http)
     }

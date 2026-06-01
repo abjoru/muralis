@@ -7,7 +7,7 @@ use muralis_core::db::Database;
 use muralis_core::ipc::{self, IpcRequest, IpcResponse};
 use muralis_core::models::DisplayMode;
 use muralis_core::paths::MuralisPaths;
-use muralis_core::sources::{AspectRatioFilter, SourceRegistry, WallpaperSource};
+use muralis_core::sources::{AspectRatioFilter, SourceContext, SourceRegistry, WallpaperSource};
 use muralis_core::wallpapers::WallpaperManager;
 
 #[derive(Parser)]
@@ -140,18 +140,31 @@ fn build_registry(config: &Config) -> Result<(SourceRegistry, reqwest::Client)> 
         ))
         .build()?;
     let sources = &config.sources;
+    // Build the global cross-cutting context once (ADR 0003): content-safety
+    // ceiling from [general], min dimensions from [filter].
+    let ctx = SourceContext {
+        content_safety: config.general.content_safety,
+        min_width: config.filter.min_width,
+        min_height: config.filter.min_height,
+    };
     let mut registry = SourceRegistry::new();
 
-    for s in muralis_source_wallhaven::create_sources(sources, client.clone()) {
+    for s in muralis_source_wallhaven::create_sources(sources, client.clone(), &ctx) {
         registry.register(s);
     }
-    for s in muralis_source_unsplash::create_sources(sources, client.clone()) {
+    for s in muralis_source_unsplash::create_sources(sources, client.clone(), &ctx) {
         registry.register(s);
     }
-    for s in muralis_source_pexels::create_sources(sources, client.clone()) {
+    for s in muralis_source_pexels::create_sources(sources, client.clone(), &ctx) {
         registry.register(s);
     }
-    for s in muralis_source_feed::create_sources(sources, client.clone()) {
+    for s in muralis_source_pixabay::create_sources(sources, client.clone(), &ctx) {
+        registry.register(s);
+    }
+    for s in muralis_source_booru::create_sources(sources, client.clone(), &ctx) {
+        registry.register(s);
+    }
+    for s in muralis_source_feed::create_sources(sources, client.clone(), &ctx) {
         registry.register(s);
     }
 
