@@ -4,6 +4,11 @@ schedules = []
 [general]
 backend = "swww"
 cache_max_mb = 500
+# Global content-safety ceiling gating EVERY source: "safe" < "moderate"
+# < "nsfw". At the default "safe" every source is forced to its safest
+# setting and nothing NSFW can surface. Raise it AND enable an NSFW-capable
+# source to opt in. (Feeds are user-curated URLs and cannot be rated.)
+content_safety = "safe"
 
 [display]
 mode = "random_startup"
@@ -21,6 +26,34 @@ enabled = true
 name = "Landscapes"
 url = "https://www.reddit.com/r/ImaginaryLandscapes/.rss"
 
+# Reddit-as-feed: append `.rss` to any subreddit URL. No API key needed; the
+# Feed source ingests the RSS image enclosures like any other feed.
+#
+# Ultrawide / widescreen wallpaper subreddits:
+# [[sources.feeds]]
+# enabled = false
+# name = "Ultrawide Master Race"
+# url = "https://www.reddit.com/r/ultrawidemasterrace/.rss"
+#
+# [[sources.feeds]]
+# enabled = false
+# name = "Widescreen Wallpaper"
+# url = "https://www.reddit.com/r/WidescreenWallpaper/.rss"
+#
+# [[sources.feeds]]
+# enabled = false
+# name = "Multiwall"
+# url = "https://www.reddit.com/r/multiwall/.rss"
+#
+# NSFW subreddit feeds (NSFW — adult content). Feeds are user-curated and
+# cannot be rated, so the content_safety ceiling does NOT filter them; enable
+# only if you want unfiltered adult content. Replace <nsfw_subreddit> with any
+# adult subreddit name:
+# [[sources.feeds]]
+# enabled = false
+# name = "NSFW Wallpapers"
+# url = "https://www.reddit.com/r/<nsfw_subreddit>/.rss"
+
 [sources.wallhaven]
 enabled = true
 categories = "100"
@@ -31,6 +64,12 @@ enabled = false
 
 [sources.pexels]
 enabled = false
+
+# Pixabay — free API key at https://pixabay.com/api/docs/ . safesearch follows
+# the content_safety ceiling (on at "safe").
+[sources.pixabay]
+enabled = false
+# api_key = "YOUR_PIXABAY_API_KEY"
 
 # Booru sources (anime/NSFW track) — one [[sources.booru]] per host.
 #   name   = per-host identity (also the dedup key). Known hosts only for now:
