@@ -161,6 +161,9 @@ fn build_registry(config: &Config) -> Result<(SourceRegistry, reqwest::Client)> 
     for s in muralis_source_pixabay::create_sources(sources, client.clone(), &ctx) {
         registry.register(s);
     }
+    for s in muralis_source_booru::create_sources(sources, client.clone(), &ctx) {
+        registry.register(s);
+    }
     for s in muralis_source_feed::create_sources(sources, client.clone(), &ctx) {
         registry.register(s);
     }

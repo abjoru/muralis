@@ -37,8 +37,8 @@ pub fn create_sources(
     };
 
     let desc = Descriptor {
-        source_type: "pexels",
-        display_name: "Pexels",
+        source_type: "pexels".into(),
+        display_name: "Pexels".into(),
         base: API_BASE,
         auth: Auth::Header {
             name: "Authorization",
@@ -47,6 +47,7 @@ pub fn create_sources(
         search_path: "/search",
         detail_path: "/photos",
         query_key: "query",
+        tag_prefix: None,
         per_page_param: Some("per_page"),
         per_page_cap: 80,
         block: BLOCK,
@@ -143,8 +144,8 @@ mod tests {
 
     fn source(http: Arc<StubFetch>) -> RestSource<PexelsSearchResponse, PexelsPhoto> {
         let desc = Descriptor {
-            source_type: "pexels",
-            display_name: "Pexels",
+            source_type: "pexels".into(),
+            display_name: "Pexels".into(),
             base: API_BASE,
             auth: Auth::Header {
                 name: "Authorization",
@@ -153,6 +154,7 @@ mod tests {
             search_path: "/search",
             detail_path: "/photos",
             query_key: "query",
+            tag_prefix: None,
             per_page_param: Some("per_page"),
             per_page_cap: 80,
             block: BLOCK,

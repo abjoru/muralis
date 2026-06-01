@@ -72,14 +72,20 @@ pub enum Auth {
 /// Per-source data a [`RestSource`] is built from. No behaviour beyond the
 /// mappers carried by the response traits.
 pub struct Descriptor {
-    pub source_type: &'static str,
-    pub display_name: &'static str,
+    /// Per-host identity + dedup key. `String` (not `&'static str`) because
+    /// multi-host sources (boorus) derive it from config `name` at runtime.
+    pub source_type: String,
+    pub display_name: String,
     pub base: &'static str,
     pub auth: Auth,
     pub search_path: &'static str,
     pub detail_path: &'static str,
     /// Query key for the search term: `"q"` (wallhaven) or `"query"`.
     pub query_key: &'static str,
+    /// Folded into the search-term value: the engine sends
+    /// `"{tag_prefix} {query}"` (trimmed) as `query_key`. Carries a booru's
+    /// `rating:` tag (+ any extra tags); `None` when the query stands alone.
+    pub tag_prefix: Option<String>,
     /// Query key for page size, or `None` when the API has no such param
     /// (wallhaven uses a fixed server page size).
     pub per_page_param: Option<&'static str>,
@@ -103,8 +109,30 @@ pub trait SearchResponse: DeserializeOwned + Send {
 pub trait DetailResponse: DeserializeOwned + Send {
     fn into_preview(self, source_type: &str) -> WallpaperPreview;
     /// Parse this source's wallpaper id out of a page URL, or `None` if the
-    /// URL doesn't belong to this source.
+    /// URL doesn't belong to this source. When [`Self::HOST_SCOPED`] is set the
+    /// engine has already host-matched, so the flavor may parse the path alone.
     fn parse_id(url: &str) -> Option<String>;
+
+    /// When `true`, `resolve_url` requires the URL's host to equal the
+    /// descriptor `base`'s host before calling [`Self::parse_id`]. Multi-host
+    /// boorus set this so two instances of one flavor (yande.re + Konachan,
+    /// both `/post/show/N`) don't fight over the same path shape. Single-host
+    /// sources whose API host differs from their page host leave it `false`.
+    const HOST_SCOPED: bool = false;
+
+    /// Build the `(url, extra_query)` for the detail fetch. Default is
+    /// path-based `{base}{detail_path}/{id}` with no extra query — the photo
+    /// APIs. Flavors override for a `.json` suffix (danbooru) or a search-by-id
+    /// query shape (moebooru has no GET-by-id: `tags=id:{id}`).
+    fn detail_request(
+        base: &str,
+        detail_path: &str,
+        search_path: &str,
+        id: &str,
+    ) -> (String, Vec<(&'static str, String)>) {
+        let _ = search_path;
+        (format!("{base}{detail_path}/{id}"), Vec::new())
+    }
 }
 
 /// The deep module: a full [`WallpaperSource`] for paged JSON REST APIs.
@@ -131,11 +159,11 @@ where
     D: DetailResponse + 'static,
 {
     fn name(&self) -> &str {
-        self.desc.display_name
+        &self.desc.display_name
     }
 
     fn source_type(&self) -> &str {
-        self.desc.source_type
+        &self.desc.source_type
     }
 
     async fn search(
@@ -157,13 +185,22 @@ where
             .zip(aspect.to_wallhaven_ratio());
         let client_filter = self.desc.server_aspect_param.is_none();
 
+        // Compose the search-term value once: a booru folds its `rating:` tag
+        // (+ extra tags) ahead of the user query into the single `tags` param.
+        let composed_query = self
+            .desc
+            .tag_prefix
+            .as_ref()
+            .map(|p| format!("{p} {query}").trim().to_string());
+
         let mut out: Vec<WallpaperPreview> = Vec::new();
         for upstream in first..=last {
             let upstream_s = upstream.to_string();
             let cap_s = self.desc.per_page_cap.to_string();
+            let q_value: &str = composed_query.as_deref().unwrap_or(query);
 
             let mut query_params: Vec<(&str, &str)> =
-                vec![(self.desc.query_key, query), ("page", &upstream_s)];
+                vec![(self.desc.query_key, q_value), ("page", &upstream_s)];
             if let Some(pp) = self.desc.per_page_param {
                 query_params.push((pp, &cap_s));
             }
@@ -200,7 +237,7 @@ where
                 )
             })?;
 
-            for preview in resp.into_previews(self.desc.source_type) {
+            for preview in resp.into_previews(&self.desc.source_type) {
                 if client_filter && !aspect.matches(preview.width, preview.height) {
                     continue;
                 }
@@ -214,10 +251,21 @@ where
     }
 
     async fn resolve_url(&self, url: &str) -> Result<Option<WallpaperPreview>> {
+        // Host-scoped sources (multi-host boorus) reject foreign hosts in the
+        // engine *before* delegating to the flavor's path-only `parse_id`, so
+        // two instances of one flavor don't fight over the same URL shape.
+        if D::HOST_SCOPED && !host_matches(url, self.desc.base) {
+            return Ok(None);
+        }
         let Some(id) = D::parse_id(url) else {
             return Ok(None);
         };
-        let endpoint = format!("{}{}/{}", self.desc.base, self.desc.detail_path, id);
+        let (endpoint, extra) = D::detail_request(
+            self.desc.base,
+            self.desc.detail_path,
+            self.desc.search_path,
+            &id,
+        );
 
         let mut headers: Vec<(&str, &str)> = Vec::new();
         let mut query_params: Vec<(&str, &str)> = Vec::new();
@@ -229,6 +277,9 @@ where
             Auth::Header { name, value } => headers.push((name, value.as_str())),
             _ => {}
         }
+        for (k, v) in &extra {
+            query_params.push((k, v.as_str()));
+        }
 
         let (status, bytes) = self.http.get(&endpoint, &headers, &query_params).await?;
         if !status.is_success() {
@@ -236,7 +287,7 @@ where
         }
         let resp: D = serde_json::from_slice(&bytes)
             .map_err(|e| self.err("resolve", &endpoint, format!("decode: {e}")))?;
-        Ok(Some(resp.into_preview(self.desc.source_type)))
+        Ok(Some(resp.into_preview(&self.desc.source_type)))
     }
 
     async fn download(&self, preview: &WallpaperPreview) -> Result<bytes::Bytes> {
@@ -251,10 +302,28 @@ where
 impl<S, D> RestSource<S, D> {
     fn err(&self, op: &str, detail: &str, kind: String) -> MuralisError {
         MuralisError::Source {
-            source_type: self.desc.source_type.to_string(),
+            source_type: self.desc.source_type.clone(),
             op: format!("{op} {detail}"),
             kind,
         }
+    }
+}
+
+/// Host portion of a URL/base (`scheme://HOST/...`), or `None` if absent.
+fn host_of(url: &str) -> Option<&str> {
+    let after_scheme = url.split_once("://").map(|(_, r)| r).unwrap_or(url);
+    let host = after_scheme
+        .split(['/', '?', '#'])
+        .next()
+        .unwrap_or(after_scheme);
+    (!host.is_empty()).then_some(host)
+}
+
+/// Whether `url`'s host equals `base`'s host (case-insensitive).
+fn host_matches(url: &str, base: &str) -> bool {
+    match (host_of(url), host_of(base)) {
+        (Some(a), Some(b)) => a.eq_ignore_ascii_case(b),
+        _ => false,
     }
 }
 
@@ -311,13 +380,14 @@ mod tests {
 
     fn descriptor() -> Descriptor {
         Descriptor {
-            source_type: "fix",
-            display_name: "Fixture",
+            source_type: "fix".into(),
+            display_name: "Fixture".into(),
             base: "https://api.fix.test",
             auth: Auth::None,
             search_path: "/search",
             detail_path: "/photo",
             query_key: "query",
+            tag_prefix: None,
             per_page_param: Some("per_page"),
             per_page_cap: 30,
             block: 1,
@@ -514,6 +584,103 @@ mod tests {
 
         assert_eq!(preview.source_id, "d9");
         assert_eq!(http.last_call().url, "https://api.fix.test/photo/d9");
+    }
+
+    #[tokio::test]
+    async fn tag_prefix_is_folded_ahead_of_the_query() {
+        let mut desc = descriptor();
+        desc.query_key = "tags";
+        desc.tag_prefix = Some("rating:safe".into());
+        let http = Arc::new(StubFetch::ok(r#"{"items":[]}"#));
+        let src: RestSource<FixSearch, FixItem> = RestSource::new(desc, http.clone());
+
+        src.search("landscape", 1, 24, AspectRatioFilter::All)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            http.last_call().query_value("tags"),
+            Some("rating:safe landscape")
+        );
+    }
+
+    #[tokio::test]
+    async fn tag_prefix_alone_when_query_empty() {
+        let mut desc = descriptor();
+        desc.query_key = "tags";
+        desc.tag_prefix = Some("rating:safe".into());
+        let http = Arc::new(StubFetch::ok(r#"{"items":[]}"#));
+        let src: RestSource<FixSearch, FixItem> = RestSource::new(desc, http.clone());
+
+        src.search("", 1, 24, AspectRatioFilter::All).await.unwrap();
+
+        assert_eq!(http.last_call().query_value("tags"), Some("rating:safe"));
+    }
+
+    // -- host-scoped resolve fixture: parse_id is path-only, host check is the
+    //    engine's job (HOST_SCOPED) --
+
+    #[derive(Deserialize)]
+    struct HostScopedItem {
+        id: String,
+        w: u32,
+        h: u32,
+    }
+
+    impl DetailResponse for HostScopedItem {
+        fn into_preview(self, source_type: &str) -> WallpaperPreview {
+            WallpaperPreview {
+                source_type: SourceType::new(source_type),
+                source_id: self.id,
+                source_url: String::new(),
+                thumbnail_url: String::new(),
+                full_url: String::new(),
+                width: self.w,
+                height: self.h,
+                tags: Vec::new(),
+            }
+        }
+        // path-only: "post/show/123" -> "123"
+        fn parse_id(url: &str) -> Option<String> {
+            let path = url.split_once("://")?.1.split_once('/')?.1;
+            let id = path.strip_prefix("post/show/")?;
+            let id = id.split(['/', '?', '#']).next()?;
+            (!id.is_empty()).then(|| id.to_string())
+        }
+        const HOST_SCOPED: bool = true;
+    }
+
+    #[tokio::test]
+    async fn host_scoped_rejects_foreign_host_without_fetching() {
+        let mut desc = descriptor();
+        desc.base = "https://yande.re";
+        let http = Arc::new(StubFetch::ok(r#"{"id":"123","w":1,"h":1}"#));
+        let src: RestSource<FixSearch, HostScopedItem> = RestSource::new(desc, http.clone());
+
+        // same path shape, different host -> rejected before any network call
+        let resolved = src
+            .resolve_url("https://konachan.com/post/show/123")
+            .await
+            .unwrap();
+
+        assert!(resolved.is_none());
+        assert!(http.calls().is_empty(), "must not hit the network");
+    }
+
+    #[tokio::test]
+    async fn host_scoped_resolves_matching_host() {
+        let mut desc = descriptor();
+        desc.base = "https://yande.re";
+        let http = Arc::new(StubFetch::ok(r#"{"id":"123","w":3440,"h":1440}"#));
+        let src: RestSource<FixSearch, HostScopedItem> = RestSource::new(desc, http.clone());
+
+        let preview = src
+            .resolve_url("https://yande.re/post/show/123")
+            .await
+            .unwrap()
+            .expect("matching host resolves");
+
+        assert_eq!(preview.source_id, "123");
     }
 
     #[tokio::test]

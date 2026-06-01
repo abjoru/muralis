@@ -41,8 +41,8 @@ pub fn create_sources(
     };
 
     let desc = Descriptor {
-        source_type: "pixabay",
-        display_name: "Pixabay",
+        source_type: "pixabay".into(),
+        display_name: "Pixabay".into(),
         base: API_BASE,
         auth: Auth::QueryParam {
             key: "key",
@@ -51,6 +51,7 @@ pub fn create_sources(
         search_path: API_PATH,
         detail_path: API_PATH,
         query_key: "q",
+        tag_prefix: None,
         per_page_param: Some("per_page"),
         per_page_cap: PER_PAGE_CAP,
         block: BLOCK,
@@ -207,8 +208,8 @@ mod tests {
         ctx: &SourceContext,
     ) -> RestSource<PixabaySearchResponse, PixabayHit> {
         let desc = Descriptor {
-            source_type: "pixabay",
-            display_name: "Pixabay",
+            source_type: "pixabay".into(),
+            display_name: "Pixabay".into(),
             base: API_BASE,
             auth: Auth::QueryParam {
                 key: "key",
@@ -217,6 +218,7 @@ mod tests {
             search_path: API_PATH,
             detail_path: API_PATH,
             query_key: "q",
+            tag_prefix: None,
             per_page_param: Some("per_page"),
             per_page_cap: PER_PAGE_CAP,
             block: BLOCK,

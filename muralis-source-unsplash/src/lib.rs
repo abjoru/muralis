@@ -37,8 +37,8 @@ pub fn create_sources(
     };
 
     let desc = Descriptor {
-        source_type: "unsplash",
-        display_name: "Unsplash",
+        source_type: "unsplash".into(),
+        display_name: "Unsplash".into(),
         base: API_BASE,
         auth: Auth::Header {
             name: "Authorization",
@@ -47,6 +47,7 @@ pub fn create_sources(
         search_path: "/search/photos",
         detail_path: "/photos",
         query_key: "query",
+        tag_prefix: None,
         per_page_param: Some("per_page"),
         per_page_cap: 30,
         block: BLOCK,
@@ -155,8 +156,8 @@ mod tests {
 
     fn source(http: Arc<StubFetch>) -> RestSource<UnsplashSearchResponse, UnsplashPhoto> {
         let desc = Descriptor {
-            source_type: "unsplash",
-            display_name: "Unsplash",
+            source_type: "unsplash".into(),
+            display_name: "Unsplash".into(),
             base: API_BASE,
             auth: Auth::Header {
                 name: "Authorization",
@@ -165,6 +166,7 @@ mod tests {
             search_path: "/search/photos",
             detail_path: "/photos",
             query_key: "query",
+            tag_prefix: None,
             per_page_param: Some("per_page"),
             per_page_cap: 30,
             block: BLOCK,

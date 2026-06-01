@@ -32,6 +32,29 @@ enabled = false
 [sources.pexels]
 enabled = false
 
+# Booru sources (anime/NSFW track) — one [[sources.booru]] per host.
+#   name   = per-host identity (also the dedup key). Known hosts only for now:
+#            danbooru, yandere, konachan.
+#   flavor = API dialect: "danbooru" or "moebooru" (yande.re + Konachan).
+# All disabled by example. Nothing NSFW can surface until you BOTH enable a
+# source AND raise [general] content_safety above "safe" (see issue #7 docs):
+# at the default "safe" ceiling every booru is forced to its safest rating.
+#
+# [[sources.booru]]
+# enabled = false
+# name = "danbooru"
+# flavor = "danbooru"
+#
+# [[sources.booru]]
+# enabled = false
+# name = "yandere"
+# flavor = "moebooru"
+#
+# [[sources.booru]]
+# enabled = false
+# name = "konachan"
+# flavor = "moebooru"
+
 [filter]
 min_width = 1920
 min_height = 1080

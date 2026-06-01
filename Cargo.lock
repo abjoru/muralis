@@ -1614,6 +1614,7 @@ dependencies = [
  "anyhow",
  "clap",
  "muralis-core",
+ "muralis-source-booru",
  "muralis-source-feed",
  "muralis-source-pexels",
  "muralis-source-pixabay",
@@ -1665,6 +1666,20 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "muralis-source-booru"
+version = "0.2.4"
+dependencies = [
+ "muralis-core",
+ "muralis-source-common",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tokio",
+ "toml",
+ "tracing",
 ]
 
 [[package]]

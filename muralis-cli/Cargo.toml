@@ -14,6 +14,7 @@ muralis-source-wallhaven = { path = "../muralis-source-wallhaven" }
 muralis-source-unsplash = { path = "../muralis-source-unsplash" }
 muralis-source-pexels = { path = "../muralis-source-pexels" }
 muralis-source-pixabay = { path = "../muralis-source-pixabay" }
+muralis-source-booru = { path = "../muralis-source-booru" }
 muralis-source-feed = { path = "../muralis-source-feed" }
 tokio = { workspace = true }
 anyhow = { workspace = true }

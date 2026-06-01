@@ -82,8 +82,8 @@ pub fn create_sources(
     let purity = effective_purity(&config.purity, ctx.content_safety);
 
     let desc = Descriptor {
-        source_type: "wallhaven",
-        display_name: "Wallhaven",
+        source_type: "wallhaven".into(),
+        display_name: "Wallhaven".into(),
         base: API_BASE,
         auth: Auth::QueryParam {
             key: "apikey",
@@ -92,6 +92,7 @@ pub fn create_sources(
         search_path: "/search",
         detail_path: "/w",
         query_key: "q",
+        tag_prefix: None,
         per_page_param: None, // wallhaven uses a fixed server page size
         per_page_cap: 24,
         block: 1, // server filters by aspect, so ~every result matches
@@ -203,8 +204,8 @@ mod tests {
 
     fn source(http: Arc<StubFetch>) -> RestSource<WallhavenResponse, WallhavenDetailResponse> {
         let desc = Descriptor {
-            source_type: "wallhaven",
-            display_name: "Wallhaven",
+            source_type: "wallhaven".into(),
+            display_name: "Wallhaven".into(),
             base: API_BASE,
             auth: Auth::QueryParam {
                 key: "apikey",
@@ -213,6 +214,7 @@ mod tests {
             search_path: "/search",
             detail_path: "/w",
             query_key: "q",
+            tag_prefix: None,
             per_page_param: None,
             per_page_cap: 24,
             block: 1,
@@ -274,8 +276,8 @@ mod tests {
         // send purity=100 to wallhaven — no NSFW leak.
         let clamped = effective_purity("111", ContentSafety::Safe);
         let desc = Descriptor {
-            source_type: "wallhaven",
-            display_name: "Wallhaven",
+            source_type: "wallhaven".into(),
+            display_name: "Wallhaven".into(),
             base: API_BASE,
             auth: Auth::QueryParam {
                 key: "apikey",
@@ -284,6 +286,7 @@ mod tests {
             search_path: "/search",
             detail_path: "/w",
             query_key: "q",
+            tag_prefix: None,
             per_page_param: None,
             per_page_cap: 24,
             block: 1,
