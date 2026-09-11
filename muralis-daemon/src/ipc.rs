@@ -1,20 +1,23 @@
+use std::path::PathBuf;
+
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixListener;
 use tokio::sync::{broadcast, mpsc, oneshot};
 use tracing::{info, warn};
 
 use muralis_core::ipc::{DaemonEvent, IpcRequest, IpcResponse};
-use muralis_core::paths::MuralisPaths;
 
 use crate::display::DaemonCommand;
 
+/// Serve the daemon socket until `shutdown` says otherwise, then take the
+/// socket file with it. The path is passed in rather than looked up so a test
+/// can serve somewhere other than the one socket a machine has.
 pub async fn serve_ipc(
+    socket_path: PathBuf,
     cmd_tx: mpsc::Sender<DaemonCommand>,
     events: broadcast::Sender<DaemonEvent>,
     mut shutdown: tokio::sync::watch::Receiver<bool>,
 ) -> anyhow::Result<()> {
-    let socket_path = MuralisPaths::socket_path();
-
     // clean up stale socket
     if socket_path.exists() {
         std::fs::remove_file(&socket_path)?;
@@ -470,5 +473,66 @@ mod tests {
             0,
             "a subscriber must see the socket close, not hang on a dead daemon"
         );
+    }
+
+    /// Serves on the given path until the returned switch is flipped.
+    fn serving_at(
+        socket_path: &std::path::Path,
+    ) -> (
+        tokio::sync::watch::Sender<bool>,
+        tokio::task::JoinHandle<anyhow::Result<()>>,
+    ) {
+        // Nothing dials in these tests, so the command receiver is never read.
+        let (cmd_tx, _cmd_rx) = mpsc::channel(4);
+        let (events, _) = broadcast::channel(4);
+        let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+        let path = socket_path.to_path_buf();
+        let handle =
+            tokio::spawn(async move { serve_ipc(path, cmd_tx, events, shutdown_rx).await });
+        (shutdown_tx, handle)
+    }
+
+    async fn await_socket(socket_path: &std::path::Path) {
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while !socket_path.exists() {
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("the socket should have been bound");
+    }
+
+    #[tokio::test]
+    async fn shutting_down_takes_the_socket_file_with_it() {
+        // A socket left behind answers a Consumer's dial with "connection
+        // refused" rather than "nothing there" — the daemon is gone either
+        // way, and only one of those is what happened.
+        let tmp = tempfile::tempdir().unwrap();
+        let socket_path = tmp.path().join("muralis.sock");
+        let (shutdown_tx, handle) = serving_at(&socket_path);
+        await_socket(&socket_path).await;
+
+        shutdown_tx.send(true).unwrap();
+        handle.await.unwrap().unwrap();
+
+        assert!(
+            !socket_path.exists(),
+            "a daemon that shut down cleanly must not leave its socket behind"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_socket_left_by_a_previous_daemon_does_not_block_the_next_one() {
+        // Whatever killed the last daemon — SIGKILL, a panic, a power cut —
+        // the next one still binds. That is what keeps this bug mild.
+        let tmp = tempfile::tempdir().unwrap();
+        let socket_path = tmp.path().join("muralis.sock");
+        std::fs::write(&socket_path, b"not a socket at all").unwrap();
+
+        let (shutdown_tx, handle) = serving_at(&socket_path);
+        await_socket(&socket_path).await;
+
+        shutdown_tx.send(true).unwrap();
+        handle.await.unwrap().unwrap();
     }
 }

@@ -27,6 +27,7 @@ async fn main() -> anyhow::Result<()> {
     let config = Config::load_or_default(&paths);
     info!(backend = %config.general.backend, mode = %config.display.mode, "starting muralis-daemon");
 
+    let socket_path = MuralisPaths::socket_path();
     let backend = create_backend(&config);
     let (cmd_tx, cmd_rx) = mpsc::channel(32);
     // Wallpaper changes are rare and subscribers few; the buffer only has to
@@ -45,8 +46,9 @@ async fn main() -> anyhow::Result<()> {
     let ipc_shutdown = shutdown_rx.clone();
     let ipc_tx = cmd_tx.clone();
     let ipc_events = event_tx.clone();
+    let ipc_socket = socket_path.clone();
     tokio::spawn(async move {
-        if let Err(e) = ipc::serve_ipc(ipc_tx, ipc_events, ipc_shutdown).await {
+        if let Err(e) = ipc::serve_ipc(ipc_socket, ipc_tx, ipc_events, ipc_shutdown).await {
             tracing::error!("IPC server error: {e}");
         }
     });
@@ -59,19 +61,40 @@ async fn main() -> anyhow::Result<()> {
     });
 
     // wait for shutdown signal
-    tokio::signal::ctrl_c().await?;
-    info!("received ctrl+c, shutting down");
+    let signal = shutdown_signal().await?;
+    info!(signal, "shutting down");
     let _ = shutdown_tx.send(true);
 
     // wait for engine to finish
     let _ = engine_handle.await;
 
-    // clean up socket
-    let socket = MuralisPaths::socket_path();
-    if socket.exists() {
-        let _ = std::fs::remove_file(socket);
+    // Belt and braces: serve_ipc unlinks the socket on the same signal, but
+    // it may have died before ever getting there.
+    if socket_path.exists() {
+        let _ = std::fs::remove_file(&socket_path);
     }
 
     info!("muralis-daemon stopped");
     Ok(())
+}
+
+/// Wait for a signal that means stop, and say which one arrived.
+///
+/// Answering only ctrl+c meant every ordinary shutdown skipped both cleanup
+/// paths: Hyprland's `exec-once` children get SIGTERM at session end, as would
+/// anything under systemd, so the socket outlived every logout. It also matters
+/// more since subscriptions landed — the watch channel this drives is what ends
+/// an open **Subscription** in an orderly way, rather than by process death.
+async fn shutdown_signal() -> anyhow::Result<&'static str> {
+    use tokio::signal::unix::{signal, SignalKind};
+
+    let mut terminate = signal(SignalKind::terminate())?;
+
+    tokio::select! {
+        result = tokio::signal::ctrl_c() => {
+            result?;
+            Ok("interrupt")
+        }
+        _ = terminate.recv() => Ok("terminate"),
+    }
 }

@@ -122,6 +122,23 @@ impl IpcResponse {
     }
 }
 
+/// Why a dial failed, in terms the person running the command can act on.
+///
+/// `ENOENT` and `ECONNREFUSED` are different facts — nothing ever bound the
+/// path, versus a socket file outliving the daemon that made it — but they are
+/// the same situation: no daemon is answering. Reporting the errno taught
+/// nobody anything, so both become one sentence naming the socket, and every
+/// other failure keeps the underlying error, which is the case where the
+/// detail is the whole message.
+fn connect_error(socket_path: &std::path::Path, error: std::io::Error) -> MuralisError {
+    match error.kind() {
+        std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused => MuralisError::Ipc(
+            format!("muralis daemon is not running ({})", socket_path.display()),
+        ),
+        _ => MuralisError::Ipc(format!("failed to connect to daemon: {error}")),
+    }
+}
+
 /// Send a request to the daemon and receive a response.
 pub async fn send_request(request: &IpcRequest) -> Result<IpcResponse> {
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -130,7 +147,7 @@ pub async fn send_request(request: &IpcRequest) -> Result<IpcResponse> {
     let socket_path = MuralisPaths::socket_path();
     let stream = UnixStream::connect(&socket_path)
         .await
-        .map_err(|e| MuralisError::Ipc(format!("failed to connect to daemon: {e}")))?;
+        .map_err(|e| connect_error(&socket_path, e))?;
 
     let (reader, mut writer) = stream.into_split();
 
@@ -321,6 +338,38 @@ mod tests {
         assert_eq!(
             serde_json::to_string(&DaemonEvent::PauseChanged { paused: true }).unwrap(),
             r#"{"event":"pause_changed","paused":true}"#
+        );
+    }
+
+    #[test]
+    fn a_daemon_that_is_not_there_says_so_rather_than_reporting_an_errno() {
+        // Both of these mean "no daemon". Which errno got there first is not
+        // something the person running `muralis status` can act on.
+        for kind in [
+            std::io::ErrorKind::NotFound,
+            std::io::ErrorKind::ConnectionRefused,
+        ] {
+            let error = connect_error(
+                std::path::Path::new("/tmp/muralis-1000.sock"),
+                std::io::Error::new(kind, "whatever the kernel called it"),
+            );
+            assert_eq!(
+                error.to_string(),
+                "ipc error: muralis daemon is not running (/tmp/muralis-1000.sock)",
+                "unexpected message for {kind:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_unexpected_failure_keeps_the_detail() {
+        let error = connect_error(
+            std::path::Path::new("/tmp/muralis-1000.sock"),
+            std::io::Error::new(std::io::ErrorKind::PermissionDenied, "permission denied"),
+        );
+        assert!(
+            error.to_string().contains("permission denied"),
+            "a failure we have no better words for must not lose them: {error}"
         );
     }
 
