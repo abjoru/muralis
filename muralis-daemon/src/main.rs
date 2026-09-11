@@ -2,7 +2,7 @@ mod display;
 mod ipc;
 mod workspace;
 
-use tokio::sync::{mpsc, watch};
+use tokio::sync::{broadcast, mpsc, watch};
 use tracing::info;
 
 use muralis_core::backend::create_backend;
@@ -29,6 +29,10 @@ async fn main() -> anyhow::Result<()> {
 
     let backend = create_backend(&config);
     let (cmd_tx, cmd_rx) = mpsc::channel(32);
+    // Wallpaper changes are rare and subscribers few; the buffer only has to
+    // absorb a burst while a Consumer is busy repainting. One that falls
+    // further behind than this is resynced from a snapshot, not disconnected.
+    let (event_tx, _) = broadcast::channel(64);
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
     // spawn workspace listener
@@ -40,14 +44,15 @@ async fn main() -> anyhow::Result<()> {
     // spawn IPC server
     let ipc_shutdown = shutdown_rx.clone();
     let ipc_tx = cmd_tx.clone();
+    let ipc_events = event_tx.clone();
     tokio::spawn(async move {
-        if let Err(e) = ipc::serve_ipc(ipc_tx, ipc_shutdown).await {
+        if let Err(e) = ipc::serve_ipc(ipc_tx, ipc_events, ipc_shutdown).await {
             tracing::error!("IPC server error: {e}");
         }
     });
 
     // spawn display engine
-    let engine = DisplayEngine::new(config, paths.clone(), backend);
+    let engine = DisplayEngine::new(config, paths.clone(), backend, event_tx);
     let engine_shutdown = shutdown_rx.clone();
     let engine_handle = tokio::spawn(async move {
         engine.run(cmd_rx, engine_shutdown).await;

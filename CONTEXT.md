@@ -113,6 +113,15 @@ success. A backend failure used to be a `warn!` on a stderr nobody captures; thi
 is the same fact on the **IPC contract**, so a **Consumer** can show a wrong
 screen as wrong.
 
+**Current wallpaper**:
+What is actually on screen, held by the daemon as the whole `Wallpaper` row
+rather than its id. One function writes it (`DisplayEngine::set_current`), and
+writing it is what clears **last_error** and emits a **Daemon event** — so a
+timed rotation, a `SetWallpaper` and a workspace switch cannot disagree about
+what "current" means or about who gets told. It had three independent
+assignment sites before, and only two of them cleared the error.
+_Avoid_: current_index (that is the rotation cursor, not what is displayed)
+
 **Mode viability**:
 Whether a display mode (`DisplayMode`) has the config it needs to do anything —
 `schedule` needs at least one entry in `schedules`, `workspace` at least one in
@@ -159,12 +168,44 @@ humans.
 
 **IPC contract**:
 The daemon socket protocol a **Consumer** depends on: the `IpcRequest` /
-`IpcResponse` variants and the event stream a subscriber holds open. Being a
-contract is what distinguishes it from the daemon's internals — variant names
+`IpcResponse` variants and the **Daemon events** a subscriber holds open. Being
+a contract is what distinguishes it from the daemon's internals — variant names
 and response field names are a compatibility promise, not free to churn. It
-carries two shapes: request/response, and a subscription the Consumer keeps
+carries two shapes: request/response, and a **Subscription** the Consumer keeps
 open and reconnects to.
 _Avoid_: API (reserve for a remote **Source**'s HTTP API)
+
+**Subscription**:
+A **Consumer**'s `Subscribe` connection, held open while the daemon writes
+**Daemon events** to it. The one request that gets no `IpcResponse` — the first
+lines back are a **Snapshot**, and everything after is live. It exists because
+the daemon cannot otherwise push: a timed rotation left the DMS Widget's matugen
+palette matching a wallpaper that was no longer on screen, resyncing only when
+the user happened to open the popout.
+_Avoid_: watch, listener, poll (the point is that it is not polling)
+
+**Daemon event**:
+One line of a **Subscription**: `{"event": …}`, tagged the way `IpcRequest` is
+tagged `command`, so a Consumer switches on one field. Three kinds:
+`wallpaper_changed` (carrying the whole `Wallpaper` row), `mode_changed`,
+`pause_changed`. An event is self-sufficient by design — `wallpaper_changed`
+holds `file_path` because `SessionData.setWallpaper()` takes a path, and an
+event a Consumer must chase with a `Status` is not a push. Adding a kind is
+backwards-compatible; changing a shipped one is not. `wallpaper_changed` fires
+only on a *successful* apply: a Consumer regenerates a whole palette from what
+it is told, so announcing an image nobody can see is worse than announcing
+nothing.
+_Avoid_: message, notification, signal
+
+**Snapshot**:
+The daemon's current state rendered as the **Daemon events** that would have
+produced it, written first on every **Subscription** and again after a lagging
+subscriber is resynced. Without it a Consumer learns nothing until the next
+rotation, and a reconnect after a `DankSocket` backoff would silently miss
+whatever changed while it was away — which is exactly the defect a subscription
+exists to fix.
+_Avoid_: initial state, replay (nothing is replayed — it is current state, not
+history)
 
 **Favorites request**:
 The **IPC contract**'s read of the **Library**: `Favorites { offset, limit }`,
@@ -198,6 +239,12 @@ _Avoid_: API, treating it as the Consumer seam (that is the **IPC contract**)
 - A **Preview** becomes a **Wallpaper** when kept; the **Library** is every Wallpaper. Nothing distinguishes Wallpapers within the Library — there is no favorite flag.
 - A **Consumer** (e.g. the **DMS Widget**) depends only on the **IPC contract**; it never links `muralis-core` and never registers as a **Source**.
 - The **Library** has exactly one backing store behind both seams: the daemon answers the **Favorites request** from the database, and `favorites list` falls back to that same database only when the daemon cannot answer.
+- Every **Daemon event** originates inside the daemon: a **Current wallpaper**
+  write, a `SetMode` that took effect, or a pause toggle. A **Consumer** never
+  emits one.
+- A **Subscription** begins with a **Snapshot**, so a Consumer's state is a
+  function of the connection alone — it never needs a `Status` round-trip to
+  become current.
 - A **Mode write-through** precedes the mode taking effect, so a refused or
   unwritable config leaves the daemon on the mode it already had.
 - **Mode viability** is read from the `Config` alone — never from the daemon's running state — so `SetMode` and `status` cannot disagree about which modes are usable.

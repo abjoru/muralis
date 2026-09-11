@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::error::{MuralisError, Result};
-use crate::models::DisplayMode;
+use crate::models::{DisplayMode, Wallpaper};
 use crate::paths::MuralisPaths;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -29,7 +29,40 @@ pub enum IpcRequest {
     Pause,
     Resume,
     Reload,
+    /// Hold the connection open and stream `DaemonEvent` lines until the
+    /// Consumer hangs up. Unlike every other variant this gets no
+    /// `IpcResponse`: the first lines back are a **snapshot** of daemon state
+    /// as events, so a Consumer that just reconnected is current without a
+    /// follow-up round-trip.
+    Subscribe,
     Quit,
+}
+
+/// One line of the **subscription**: something the daemon did, pushed to every
+/// **Consumer** holding a `Subscribe` connection open.
+///
+/// Tagged like `IpcRequest` so a Consumer switches on one field, and carries
+/// everything needed to act — `WallpaperChanged` holds the whole `Wallpaper`
+/// row because `SessionData.setWallpaper()` wants a path, and asking `Status`
+/// for it would defeat the point of pushing. Adding a variant is
+/// backwards-compatible; changing a shipped one is not.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "event", rename_all = "snake_case")]
+pub enum DaemonEvent {
+    /// A wallpaper reached the screen. Emitted only on a successful apply —
+    /// a failed one leaves the previous wallpaper up, and saying otherwise
+    /// would have a Consumer regenerate its palette from an image nobody sees.
+    /// Boxed only to keep the variants a similar size — `Box<T>` serializes
+    /// as the row itself, so the wire shape is unaffected.
+    WallpaperChanged {
+        wallpaper: Box<Wallpaper>,
+    },
+    ModeChanged {
+        mode: DisplayMode,
+    },
+    PauseChanged {
+        paused: bool,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -236,6 +269,62 @@ mod tests {
     }
 
     #[test]
+    fn subscribe_is_a_bare_command_like_the_one_shots() {
+        let req: IpcRequest = serde_json::from_str(r#"{"command":"subscribe"}"#).unwrap();
+        assert!(matches!(req, IpcRequest::Subscribe));
+        assert_eq!(
+            serde_json::to_string(&IpcRequest::Subscribe).unwrap(),
+            r#"{"command":"subscribe"}"#
+        );
+    }
+
+    #[test]
+    fn a_wallpaper_event_carries_the_path_without_a_follow_up_request() {
+        // The DMS Widget hands `file_path` straight to `setWallpaper()`; an
+        // event it has to chase with a `Status` is not a push.
+        let event = DaemonEvent::WallpaperChanged {
+            wallpaper: Box::new(Wallpaper {
+                id: "abc123".into(),
+                source_type: crate::models::SourceType::new("wallhaven"),
+                source_id: "x7k2m".into(),
+                source_url: None,
+                width: 3840,
+                height: 2160,
+                tags: vec!["night".into()],
+                file_path: "/home/u/.local/share/muralis/wallpapers/abc123.jpg".into(),
+                added_at: "2026-09-10T00:00:00Z".into(),
+                last_used: None,
+                use_count: 0,
+            }),
+        };
+
+        let json = serde_json::to_string(&event).unwrap();
+
+        assert!(
+            json.starts_with(r#"{"event":"wallpaper_changed","wallpaper":{"#),
+            "unexpected wire shape: {json}"
+        );
+        assert!(
+            json.contains(r#""file_path":"/home/u/.local/share/muralis/wallpapers/abc123.jpg""#)
+        );
+    }
+
+    #[test]
+    fn the_other_event_kinds_name_themselves_the_same_way() {
+        assert_eq!(
+            serde_json::to_string(&DaemonEvent::ModeChanged {
+                mode: DisplayMode::Sequential
+            })
+            .unwrap(),
+            r#"{"event":"mode_changed","mode":"sequential"}"#
+        );
+        assert_eq!(
+            serde_json::to_string(&DaemonEvent::PauseChanged { paused: true }).unwrap(),
+            r#"{"event":"pause_changed","paused":true}"#
+        );
+    }
+
+    #[test]
     fn test_roundtrip_all_requests() {
         let requests = vec![
             IpcRequest::Status,
@@ -248,6 +337,7 @@ mod tests {
             IpcRequest::Pause,
             IpcRequest::Resume,
             IpcRequest::Reload,
+            IpcRequest::Subscribe,
             IpcRequest::Quit,
         ];
 

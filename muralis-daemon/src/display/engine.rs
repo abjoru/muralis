@@ -1,7 +1,7 @@
 use std::path::Path;
 use std::time::Duration;
 
-use tokio::sync::mpsc;
+use tokio::sync::{broadcast, mpsc};
 use tokio::time::{interval, Instant, MissedTickBehavior};
 use tracing::{info, warn};
 
@@ -9,7 +9,7 @@ use muralis_core::backend::{wait_until_ready, ReadinessPolicy, WallpaperBackend}
 use muralis_core::cache;
 use muralis_core::config::Config;
 use muralis_core::db::Database;
-use muralis_core::ipc::{DaemonStatus, FavoritesPage};
+use muralis_core::ipc::{DaemonEvent, DaemonStatus, FavoritesPage};
 use muralis_core::models::{DisplayMode, Wallpaper};
 use muralis_core::paths::MuralisPaths;
 
@@ -23,15 +23,24 @@ pub struct DisplayEngine {
     mode: DisplayMode,
     paused: bool,
     current_index: usize,
-    current_wallpaper: Option<String>,
+    /// What is actually on screen — the whole row, not just its id, so a
+    /// subscriber's snapshot can answer with a `file_path` without going back
+    /// to the database. Only `set_current` writes it.
+    current: Option<Wallpaper>,
     wallpapers: Vec<Wallpaper>,
     next_change: Option<Instant>,
     last_error: Option<String>,
     readiness: ReadinessPolicy,
+    events: broadcast::Sender<DaemonEvent>,
 }
 
 impl DisplayEngine {
-    pub fn new(config: Config, paths: MuralisPaths, backend: Box<dyn WallpaperBackend>) -> Self {
+    pub fn new(
+        config: Config,
+        paths: MuralisPaths,
+        backend: Box<dyn WallpaperBackend>,
+        events: broadcast::Sender<DaemonEvent>,
+    ) -> Self {
         let mode = config.display.mode;
         Self {
             config,
@@ -40,12 +49,50 @@ impl DisplayEngine {
             mode,
             paused: false,
             current_index: 0,
-            current_wallpaper: None,
+            current: None,
             wallpapers: Vec::new(),
             next_change: None,
             last_error: None,
             readiness: ReadinessPolicy::default(),
+            events,
         }
+    }
+
+    /// The one place `current` is written. Three call sites used to assign it
+    /// independently — a timed rotation, a `SetWallpaper`, a workspace switch —
+    /// and only two of them cleared `last_error`. Routing them all through here
+    /// means "what is on screen" has a single definition, and every way of
+    /// changing it reaches subscribers.
+    fn set_current(&mut self, wp: &Wallpaper) {
+        self.current = Some(wp.clone());
+        self.last_error = None;
+        self.emit(DaemonEvent::WallpaperChanged {
+            wallpaper: Box::new(wp.clone()),
+        });
+    }
+
+    /// Push one event to every open subscription. `send` never blocks and
+    /// fails only when nobody is subscribed — the common case, and not an
+    /// error. A subscriber too slow to keep up has events dropped on its
+    /// behalf and is resynced from a snapshot; it cannot stall the engine.
+    fn emit(&self, event: DaemonEvent) {
+        let _ = self.events.send(event);
+    }
+
+    /// Current state as the events that would have produced it, for a
+    /// subscriber that just connected.
+    fn snapshot(&self) -> Vec<DaemonEvent> {
+        let mut events = Vec::with_capacity(3);
+        if let Some(wp) = &self.current {
+            events.push(DaemonEvent::WallpaperChanged {
+                wallpaper: Box::new(wp.clone()),
+            });
+        }
+        events.push(DaemonEvent::ModeChanged { mode: self.mode });
+        events.push(DaemonEvent::PauseChanged {
+            paused: self.paused,
+        });
+        events
     }
 
     pub async fn run(
@@ -113,6 +160,9 @@ impl DisplayEngine {
                             self.update_next_change(tick_duration);
                             timer.reset();
                         }
+                        DaemonCommand::Snapshot { respond } => {
+                            let _ = respond.send(self.snapshot());
+                        }
                         DaemonCommand::Favorites { offset, limit, respond } => {
                             let _ = respond.send(self.favorites(offset, limit));
                         }
@@ -126,10 +176,12 @@ impl DisplayEngine {
                         }
                         DaemonCommand::Pause => {
                             self.paused = true;
+                            self.emit(DaemonEvent::PauseChanged { paused: true });
                             info!("rotation paused");
                         }
                         DaemonCommand::Resume => {
                             self.paused = false;
+                            self.emit(DaemonEvent::PauseChanged { paused: false });
                             self.update_next_change(tick_duration);
                             timer.reset();
                             info!("rotation resumed");
@@ -231,8 +283,8 @@ impl DisplayEngine {
             if path.exists() {
                 match self.backend.set_wallpaper_all(path).await {
                     Ok(()) => {
-                        self.current_wallpaper = Some(wp.id.clone());
-                        self.last_error = None;
+                        let wp = wp.clone();
+                        self.set_current(&wp);
                         if let Ok(db) = Database::open(&self.paths.db_path()) {
                             let _ = db.mark_used(&wp.id);
                         }
@@ -277,6 +329,7 @@ impl DisplayEngine {
 
         info!(mode = %mode, "display mode changed");
         self.mode = mode;
+        self.emit(DaemonEvent::ModeChanged { mode });
         Ok(())
     }
 
@@ -317,7 +370,7 @@ impl DisplayEngine {
             Some(wp) => {
                 let path = Path::new(&wp.file_path);
                 self.backend.set_wallpaper_all(path).await?;
-                self.current_wallpaper = Some(wp.id.clone());
+                self.set_current(&wp);
                 if let Ok(db) = Database::open(&self.paths.db_path()) {
                     let _ = db.mark_used(&wp.id);
                 }
@@ -355,8 +408,8 @@ impl DisplayEngine {
                 if path.exists() {
                     match self.backend.set_wallpaper_all(path).await {
                         Ok(()) => {
-                            self.current_wallpaper = Some(wp.id.clone());
-                            self.last_error = None;
+                            let wp = wp.clone();
+                            self.set_current(&wp);
                             info!(workspace = workspace_id, id = %wp.id, "workspace wallpaper set");
                         }
                         Err(e) => {
@@ -407,7 +460,7 @@ impl DisplayEngine {
             running: true,
             mode: self.mode,
             paused: self.paused,
-            current_wallpaper: self.current_wallpaper.clone(),
+            current_wallpaper: self.current.as_ref().map(|w| w.id.clone()),
             wallpaper_count: self.wallpapers.len() as u32,
             next_change: self.next_change.map(|t| {
                 let remaining = t.saturating_duration_since(Instant::now());
@@ -452,6 +505,15 @@ mod tests {
             }
         }
 
+        /// Up from the first request, for tests about what an apply does
+        /// rather than about waiting for one.
+        fn ready_now() -> Self {
+            Self {
+                ready_at: 1,
+                probes: AtomicU32::new(1),
+            }
+        }
+
         fn is_up(&self) -> bool {
             self.ready_at != 0 && self.probes.load(Ordering::SeqCst) >= self.ready_at
         }
@@ -485,6 +547,26 @@ mod tests {
         }
     }
 
+    /// Every event the engine has emitted so far, drained without blocking.
+    fn drained(rx: &mut broadcast::Receiver<DaemonEvent>) -> Vec<DaemonEvent> {
+        let mut events = Vec::new();
+        while let Ok(event) = rx.try_recv() {
+            events.push(event);
+        }
+        events
+    }
+
+    /// The ids of the wallpapers a run of events says reached the screen.
+    fn changed_ids(events: &[DaemonEvent]) -> Vec<String> {
+        events
+            .iter()
+            .filter_map(|e| match e {
+                DaemonEvent::WallpaperChanged { wallpaper } => Some(wallpaper.id.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
     /// An engine over a throwaway XDG root, holding one wallpaper that exists
     /// on disk. Probing is instant so tests assert behaviour, not timing.
     fn engine_with(backend: FakeBackend) -> (DisplayEngine, tempfile::TempDir) {
@@ -499,7 +581,8 @@ mod tests {
         let file = paths.wallpapers_dir().join("wp1.jpg");
         std::fs::write(&file, b"not really a jpeg").unwrap();
 
-        let mut engine = DisplayEngine::new(Config::default(), paths, Box::new(backend));
+        let (events, _) = broadcast::channel(64);
+        let mut engine = DisplayEngine::new(Config::default(), paths, Box::new(backend), events);
         engine.readiness = ReadinessPolicy {
             attempts: 5,
             initial_delay: Duration::ZERO,
@@ -811,5 +894,110 @@ mod tests {
             status.last_error.is_none(),
             "a stale failure must not outlive the wallpaper that fixed it"
         );
+    }
+
+    #[tokio::test]
+    async fn every_way_the_wallpaper_changes_reaches_a_subscriber() {
+        // The three assignment sites — a rotation, an explicit pick, a
+        // workspace switch — used to write `current` independently. A
+        // subscriber that only hears about one of them is the bug.
+        let (mut engine, _tmp) = engine_with(FakeBackend::ready_now());
+        engine.config.workspaces = vec![muralis_core::config::WorkspaceConfig {
+            workspace: 1,
+            wallpaper: "wp1".into(),
+        }];
+        let mut rx = engine.events.subscribe();
+
+        engine.apply_current().await;
+        engine.set_wallpaper("wp1").await.unwrap();
+        engine.mode = DisplayMode::Workspace;
+        engine.handle_workspace_change(1).await;
+
+        assert_eq!(
+            changed_ids(&drained(&mut rx)),
+            ["wp1", "wp1", "wp1"],
+            "a rotation, a SetWallpaper and a workspace switch must each push"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_failed_apply_tells_nobody_the_wallpaper_changed() {
+        // A Consumer regenerates its whole palette from the image it is told
+        // about; announcing one that never reached the screen is worse than
+        // announcing nothing.
+        let (mut engine, _tmp) = engine_with(FakeBackend::ready_at(0));
+        let mut rx = engine.events.subscribe();
+
+        engine.apply_current().await;
+
+        assert!(drained(&mut rx).is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_successful_pick_clears_a_recorded_failure() {
+        // `set_wallpaper` used to assign `current` without clearing
+        // `last_error`, so a Consumer kept showing a failure the next
+        // successful pick had already fixed.
+        let backend = FakeBackend::ready_at(2);
+        let (mut engine, _tmp) = engine_with(backend);
+        engine.apply_current().await;
+        assert!(engine.status().last_error.is_some());
+
+        engine.backend.is_ready().await.ok();
+        engine.backend.is_ready().await.ok();
+        engine.set_wallpaper("wp1").await.unwrap();
+
+        assert!(engine.status().last_error.is_none());
+    }
+
+    #[tokio::test]
+    async fn a_new_subscriber_is_told_what_is_already_on_screen() {
+        let (mut engine, _tmp) = engine_with(FakeBackend::ready_now());
+        engine.apply_current().await;
+
+        let snapshot = engine.snapshot();
+
+        assert_eq!(
+            changed_ids(&snapshot),
+            ["wp1"],
+            "a Consumer connecting mid-session must not wait for the next rotation"
+        );
+        assert!(snapshot
+            .iter()
+            .any(|e| matches!(e, DaemonEvent::ModeChanged { .. })));
+        assert!(snapshot
+            .iter()
+            .any(|e| matches!(e, DaemonEvent::PauseChanged { paused: false })));
+    }
+
+    #[tokio::test]
+    async fn a_snapshot_with_nothing_applied_says_so_by_omission() {
+        let (engine, _tmp) = engine_with(FakeBackend::ready_at(1));
+
+        let snapshot = engine.snapshot();
+
+        assert!(
+            changed_ids(&snapshot).is_empty(),
+            "nothing has been applied, so there is no wallpaper to announce"
+        );
+        assert_eq!(snapshot.len(), 2, "mode and pause state still come through");
+    }
+
+    #[tokio::test]
+    async fn a_mode_change_is_pushed_but_a_refused_one_is_not() {
+        let (mut engine, _tmp) = engine_with(FakeBackend::ready_at(1));
+        let mut rx = engine.events.subscribe();
+
+        engine.set_mode(DisplayMode::Sequential).unwrap();
+        assert!(engine.set_mode(DisplayMode::Workspace).is_err());
+
+        let events = drained(&mut rx);
+        assert_eq!(events.len(), 1, "only the change that took effect is news");
+        assert!(matches!(
+            events[0],
+            DaemonEvent::ModeChanged {
+                mode: DisplayMode::Sequential
+            }
+        ));
     }
 }
