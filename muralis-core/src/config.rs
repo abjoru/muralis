@@ -55,6 +55,22 @@ impl Config {
         Self::load(paths).unwrap_or_default()
     }
 
+    /// Why `mode` cannot run under this config, or `None` when it can.
+    ///
+    /// The single viability predicate: `SetMode` refuses on `Some` rather than
+    /// reporting success for a mode whose handler would no-op forever, and the
+    /// usable set a **Consumer** reads off `status` is the modes answering
+    /// `None`. Both read it here so the rule exists once.
+    pub fn mode_unavailable_reason(&self, mode: DisplayMode) -> Option<&'static str> {
+        match mode {
+            DisplayMode::Schedule if self.schedules.is_empty() => Some("no schedules configured"),
+            DisplayMode::Workspace if self.workspaces.is_empty() => {
+                Some("no workspaces configured")
+            }
+            _ => None,
+        }
+    }
+
     pub fn save(&self, paths: &MuralisPaths) -> Result<()> {
         let content = toml::to_string_pretty(self)
             .map_err(|e| MuralisError::Config(format!("failed to serialize config: {e}")))?;
@@ -160,6 +176,62 @@ impl Default for FilterConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn schedule_is_unusable_without_schedules() {
+        let config = Config::default();
+        assert_eq!(
+            config.mode_unavailable_reason(DisplayMode::Schedule),
+            Some("no schedules configured"),
+            "schedule mode no-ops forever on an empty schedule list"
+        );
+    }
+
+    #[test]
+    fn schedule_becomes_usable_once_one_is_configured() {
+        let mut config = Config::default();
+        config.schedules.push(ScheduleEntry {
+            time: "08:00".into(),
+            tags: vec!["morning".into()],
+        });
+        assert_eq!(config.mode_unavailable_reason(DisplayMode::Schedule), None);
+    }
+
+    #[test]
+    fn workspace_is_unusable_without_workspaces() {
+        let config = Config::default();
+        assert_eq!(
+            config.mode_unavailable_reason(DisplayMode::Workspace),
+            Some("no workspaces configured"),
+        );
+    }
+
+    #[test]
+    fn workspace_becomes_usable_once_one_is_configured() {
+        let mut config = Config::default();
+        config.workspaces.push(WorkspaceConfig {
+            workspace: 1,
+            wallpaper: "wp1".into(),
+        });
+        assert_eq!(config.mode_unavailable_reason(DisplayMode::Workspace), None);
+    }
+
+    #[test]
+    fn the_rotation_modes_need_no_config_to_run() {
+        let config = Config::default();
+        for mode in [
+            DisplayMode::Static,
+            DisplayMode::Random,
+            DisplayMode::RandomStartup,
+            DisplayMode::Sequential,
+        ] {
+            assert_eq!(
+                config.mode_unavailable_reason(mode),
+                None,
+                "{mode} has no config precondition"
+            );
+        }
+    }
 
     #[test]
     fn test_default_config() {

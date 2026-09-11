@@ -113,6 +113,18 @@ success. A backend failure used to be a `warn!` on a stderr nobody captures; thi
 is the same fact on the **IPC contract**, so a **Consumer** can show a wrong
 screen as wrong.
 
+**Mode viability**:
+Whether a display mode (`DisplayMode`) has the config it needs to do anything —
+`schedule` needs at least one entry in `schedules`, `workspace` at least one in
+`workspaces`; the four rotation modes need nothing. One predicate
+(`Config::mode_unavailable_reason`) answers it, returning the reason a mode
+cannot run. `SetMode` refuses on a reason instead of accepting a mode whose
+handler would no-op forever, and the usable set a **Consumer** reads off
+`status` is derived from the same call — encoding the rule twice is how the
+refusal and the offer drift apart.
+_Avoid_: valid mode (a mode is well-formed either way; it is the config that is
+missing), enabled
+
 ### Consumers
 
 **DMS Widget**:
@@ -158,6 +170,7 @@ _Avoid_: API, treating it as the Consumer seam (that is the **IPC contract**)
 - A gelbooru **Flavor** instance points at any gelbooru-clone host by `base` (gelbooru, rule34, safebooru, realbooru) — multi-host for free.
 - A **Preview** becomes a **Wallpaper** when kept; the **Library** is every Wallpaper. Nothing distinguishes Wallpapers within the Library — there is no favorite flag.
 - A **Consumer** (e.g. the **DMS Widget**) depends only on the **IPC contract**; it never links `muralis-core` and never registers as a **Source**.
+- **Mode viability** is read from the `Config` alone — never from the daemon's running state — so `SetMode` and `status` cannot disagree about which modes are usable.
 
 ## Example dialogue
 

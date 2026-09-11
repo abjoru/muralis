@@ -18,6 +18,7 @@ pub enum DaemonCommand {
     },
     SetMode {
         mode: DisplayMode,
+        respond: oneshot::Sender<Result<(), String>>,
     },
     Pause,
     Resume,

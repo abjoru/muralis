@@ -117,9 +117,9 @@ impl DisplayEngine {
                             let result = self.set_wallpaper(&id).await;
                             let _ = respond.send(result.map_err(|e| e.to_string()));
                         }
-                        DaemonCommand::SetMode { mode } => {
-                            info!(mode = %mode, "display mode changed");
-                            self.mode = mode;
+                        DaemonCommand::SetMode { mode, respond } => {
+                            let result = self.set_mode(mode);
+                            let _ = respond.send(result);
                         }
                         DaemonCommand::Pause => {
                             self.paused = true;
@@ -249,6 +249,21 @@ impl DisplayEngine {
                 self.last_error = Some(format!("wallpaper file missing: {}", path.display()));
             }
         }
+    }
+
+    /// Switch the display mode, refusing one whose config precondition is
+    /// missing. `schedule` with no schedules and `workspace` with no workspaces
+    /// have handlers that no-op forever: reporting success there means the
+    /// wallpaper silently stops changing with nothing to connect it to.
+    fn set_mode(&mut self, mode: DisplayMode) -> Result<(), String> {
+        if let Some(reason) = self.config.mode_unavailable_reason(mode) {
+            warn!(mode = %mode, reason, "refused a mode that cannot run");
+            return Err(reason.to_string());
+        }
+
+        info!(mode = %mode, "display mode changed");
+        self.mode = mode;
+        Ok(())
     }
 
     async fn set_wallpaper(&mut self, id: &str) -> muralis_core::error::Result<()> {
@@ -381,6 +396,7 @@ mod tests {
     use super::*;
     use async_trait::async_trait;
     use muralis_core::backend::ReadinessPolicy;
+    use muralis_core::config::ScheduleEntry;
     use muralis_core::error::{MuralisError, Result};
     use muralis_core::models::SourceType;
     use std::sync::atomic::{AtomicU32, Ordering};
@@ -468,6 +484,51 @@ mod tests {
         }];
 
         (engine, tmp)
+    }
+
+    #[tokio::test]
+    async fn set_mode_refuses_a_mode_that_cannot_possibly_run() {
+        let (mut engine, _tmp) = engine_with(FakeBackend::ready_at(1));
+        let before = engine.mode;
+
+        let result = engine.set_mode(DisplayMode::Schedule);
+
+        assert_eq!(
+            result.err().as_deref(),
+            Some("no schedules configured"),
+            "an empty schedule list makes schedule mode inert, so the change must fail loudly"
+        );
+        assert_eq!(engine.mode, before, "the previous mode stays in effect");
+    }
+
+    #[tokio::test]
+    async fn set_mode_refuses_workspace_without_workspaces() {
+        let (mut engine, _tmp) = engine_with(FakeBackend::ready_at(1));
+
+        let result = engine.set_mode(DisplayMode::Workspace);
+
+        assert_eq!(result.err().as_deref(), Some("no workspaces configured"));
+        assert_ne!(engine.mode, DisplayMode::Workspace);
+    }
+
+    #[tokio::test]
+    async fn set_mode_accepts_a_configured_mode() {
+        let (mut engine, _tmp) = engine_with(FakeBackend::ready_at(1));
+        engine.config.schedules.push(ScheduleEntry {
+            time: "08:00".into(),
+            tags: vec!["morning".into()],
+        });
+
+        assert!(engine.set_mode(DisplayMode::Schedule).is_ok());
+        assert_eq!(engine.mode, DisplayMode::Schedule);
+    }
+
+    #[tokio::test]
+    async fn set_mode_accepts_a_mode_with_no_precondition() {
+        let (mut engine, _tmp) = engine_with(FakeBackend::ready_at(1));
+
+        assert!(engine.set_mode(DisplayMode::Sequential).is_ok());
+        assert_eq!(engine.mode, DisplayMode::Sequential);
     }
 
     #[tokio::test]

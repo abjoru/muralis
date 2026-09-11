@@ -119,8 +119,19 @@ async fn dispatch_request(
             }
         }
         IpcRequest::SetMode { mode } => {
-            let _ = cmd_tx.send(DaemonCommand::SetMode { mode }).await;
-            IpcResponse::ok()
+            let (tx, rx) = oneshot::channel();
+            if cmd_tx
+                .send(DaemonCommand::SetMode { mode, respond: tx })
+                .await
+                .is_err()
+            {
+                return IpcResponse::error("engine unavailable");
+            }
+            match rx.await {
+                Ok(Ok(())) => IpcResponse::ok(),
+                Ok(Err(msg)) => IpcResponse::error(msg),
+                Err(_) => IpcResponse::error("engine dropped response"),
+            }
         }
         IpcRequest::Pause => {
             let _ = cmd_tx.send(DaemonCommand::Pause).await;
