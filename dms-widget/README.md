@@ -79,6 +79,30 @@ why push is a v1 blocker rather than a nicety. See ADR 0001.
 policy: a daemon restart kills the stream, and failing to restart it leaves the
 widget silently deaf.
 
+## Failure states
+
+Four states, three of which the widget must render rather than hide.
+
+| State | `favorites list` | `status` | Widget |
+| --- | --- | --- | --- |
+| muralis not installed | spawn fails | spawn fails | never loads — `StartupCheck.qml` blocks activation with an install hint |
+| daemon down | exit 0, JSON | exit 1, empty stdout | grid usable, transport and mode controls disabled, pill says so |
+| daemon up, nothing applied | exit 0, JSON | exit 0, `current_wallpaper: null` | says so explicitly; grid usable, one click fixes it |
+| empty library | `[]` | exit 0, `wallpaper_count: 0` | empty-state pointing at `muralis search` |
+
+Note `dependencies` in the manifest gates nothing — the schema calls it registry
+metadata, and neither it nor its deprecated alias `requires` is enforced anywhere
+in `PluginService.qml` or the installer. `startupCheck` is the only real gate.
+
+The third row is a real state, not a hypothetical: muralis applies its
+`random_startup` wallpaper exactly once and drops backend failures silently, so
+losing a startup race leaves a wallpaper on screen that muralis does not know
+about ([#11](https://github.com/abjoru/muralis/issues/11)). Reporting "nothing
+selected" there would read as the widget being broken, when the truth is that the
+daemon applied nothing this session. The widget says which, because it is the
+only component positioned to surface it. The state should become rare once #11
+lands; it will not become impossible, since any backend hiccup reproduces it.
+
 ## Scope
 
 First cut is parity with the old WallpaperTab patch: library grid with

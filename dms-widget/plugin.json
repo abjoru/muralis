@@ -2,13 +2,19 @@
     "$schema": "https://danklinux.com/schemas/plugin.json",
     "id": "muralis",
     "name": "Muralis",
-    "description": "Browse muralis favorites and drive wallpaper rotation from the DankBar",
+    "description": "Browse the muralis library and drive wallpaper rotation from the DankBar",
     "version": "0.1.0",
     "author": "abjoru",
     "type": "widget",
-    "capabilities": ["wallpaper", "dankbar-widget"],
+    "capabilities": [
+        "wallpaper",
+        "dankbar-widget"
+    ],
     "component": "./MuralisWidget.qml",
     "icon": "wallpaper",
-    "requires_dms": ">=1.6.0",
-    "requires": ["muralis"]
+    "dependencies": [
+        "muralis"
+    ],
+    "startupCheck": "./StartupCheck.qml",
+    "requires_dms": ">=1.6.0"
 }
