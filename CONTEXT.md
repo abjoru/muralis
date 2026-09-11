@@ -56,8 +56,24 @@ The policy is an **ordered level** — `safe` < `moderate` < `nsfw` — acting a
 ### Search & paging
 
 **Preview**:
-A transient search result (`WallpaperPreview`) — not yet favorited, not on disk.
+A transient search result (`WallpaperPreview`) — not in the **Library**, not on
+disk.
 _Avoid_: result, thumbnail, image
+
+**Wallpaper**:
+A **Preview** that has been kept: downloaded to disk and recorded as a row in
+`wallpapers`. The persisted counterpart to a Preview, carrying usage history
+(`last_used`, `use_count`) a Preview has no place for.
+_Avoid_: favorite (see **Library**), image, file
+
+**Library**:
+Every **Wallpaper** on disk — the set the daemon rotates through and a
+**Consumer** displays. There is no curated subset within it: the schema has no
+favorite flag, so being in the Library *is* being kept, and `muralis favorites
+list` returns the whole thing. The CLI spelling is historical and stays (it is
+part of the **CLI contract**); our own prose says Library, so nothing implies a
+filter that does not exist.
+_Avoid_: favorites (the command name, not the concept), collection, gallery
 
 **Page-filling**:
 A **RestSource** consuming a fixed block of B upstream API pages for one logical page, applying the aspect filter as it goes, returning up to `per_page` matches. Best-effort *within the block*: a logical page may return fewer than `per_page` even when more matches exist upstream.
@@ -107,6 +123,7 @@ daemon socket, a different seam)
 - The `SourceRegistry` holds **Sources** (any mix of **RestSource**, **Booru Source**, **Pixabay Source**, **Feed Source**).
 - `create_sources` takes a **SourceContext** (global cross-cutting knobs: **Content Safety policy**, `min_width`/`min_height`) in addition to the `[sources]` table + client. The contract is the same for every plugin.
 - A gelbooru **Flavor** instance points at any gelbooru-clone host by `base` (gelbooru, rule34, safebooru, realbooru) — multi-host for free.
+- A **Preview** becomes a **Wallpaper** when kept; the **Library** is every Wallpaper. Nothing distinguishes Wallpapers within the Library — there is no favorite flag.
 - A **Consumer** (e.g. the **DMS Widget**) depends only on the **CLI contract**; it never links `muralis-core` and never registers as a **Source**.
 
 ## Example dialogue
