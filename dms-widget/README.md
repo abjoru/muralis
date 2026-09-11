@@ -63,7 +63,8 @@ already uses. See ADR 0002.
 | `SetMode { mode }` | static, random, random_startup, sequential, workspace, schedule — offered per `available_modes` ([#14](https://github.com/abjoru/muralis/issues/14)) |
 | `Subscribe` | push: wallpaper-changed events, held open ([#9](https://github.com/abjoru/muralis/issues/9)) |
 
-`Subscribe` is unbuilt — the widget cannot ship before it.
+Every one of these is built. `Subscribe` ([#9](https://github.com/abjoru/muralis/issues/9))
+was the last, and is what the widget holds open for the life of the session.
 
 ### Mode switching
 
@@ -78,8 +79,9 @@ shipping prose for it. The daemon refuses an
 unusable mode regardless ([#13](https://github.com/abjoru/muralis/issues/13)),
 so the widget's filtering is a courtesy, not the safety net.
 
-A mode chosen here persists to `config.toml` ([#12](https://github.com/abjoru/muralis/issues/12));
-until that lands it silently reverts on daemon restart.
+A mode chosen here persists to `config.toml`
+([#12](https://github.com/abjoru/muralis/issues/12)), so it survives a daemon
+restart.
 
 `Favorites` answers with `wallpapers`, `total` and the `offset` it served, so the
 grid can size its scrollbar without holding the whole library. Entries carry
@@ -109,6 +111,33 @@ why push is a v1 blocker rather than a nicety. See ADR 0001.
 
 Reconnection is not ours to design: `DankSocket` redials with exponential
 backoff and jitter, capped at 15s, allocating a fresh socket per attempt.
+
+### Two sockets
+
+The contract has two shapes, so the widget opens two connections:
+
+- **`eventSocket`** holds one `Subscribe` open for the life of the session. It
+  carries a snapshot on connect — so a redial resynchronises without a separate
+  request — and every change after. This is the one that keeps the matugen
+  palette matching the wallpaper through rotations the widget did not initiate,
+  which is the whole reason the widget exists rather than polling.
+- **`commandSocket`** carries one-shot requests. The daemon answers a command
+  and hangs up, so each gets a fresh dial; they queue and drain one at a time
+  rather than racing onto a socket that is already closing. Commands here are
+  always user-initiated, so the extra dial costs nothing anyone can perceive.
+
+`SessionData.setWallpaper()` is called only when the path actually differs from
+what DMS already has. Every redial replays the snapshot, and regenerating a
+palette we already have is pure cost.
+
+## Files
+
+| File | Role |
+| --- | --- |
+| `plugin.json` | DMS manifest. `component` and `startupCheck` are the only fields that gate anything |
+| `MuralisWidget.qml` | The `PluginComponent`: both sockets, all daemon state, both bar pills |
+| `MuralisPopout.qml` | The popout view — grid, paging, transport, mode chips. Owns no socket; every value it draws is a property of the widget |
+| `StartupCheck.qml` | Blocks activation when the `muralis` binary is absent |
 
 ## Failure states
 
