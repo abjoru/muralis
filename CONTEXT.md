@@ -90,10 +90,12 @@ is a client of the contract and never a **Source**.
 
 **CLI contract**:
 The subset of `muralis` CLI commands and their JSON output that a **Consumer**
-depends on — favorites listing, daemon status, set/next/prev/pause/resume/mode.
-Being a contract is what distinguishes it from the rest of the CLI surface:
-its command names and output field names are a compatibility promise to
-Consumers, not an implementation detail free to churn.
+depends on — favorites listing, daemon status, set/next/prev/pause/resume/mode,
+and the streaming `subscribe`. Being a contract is what distinguishes it from
+the rest of the CLI surface: its command names and output field names are a
+compatibility promise to Consumers, not an implementation detail free to churn.
+It carries two shapes, not one — request/response commands that exit, and
+streaming commands a Consumer holds open and must reconnect to.
 _Avoid_: API (reserve for a remote **Source**'s HTTP API), IPC (that is the
 daemon socket, a different seam)
 

@@ -18,10 +18,10 @@ has no favorites variant — `favorites list` opens SQLite directly in the CLI
 process — so a socket-only Consumer cannot draw its grid. It would speak two
 protocols and still spawn a process for the most expensive call.
 
-**Extend the IPC protocol first, then speak the socket.** Rejected as v1
-sequencing, not on merit; it is the intended successor. See
-[#9](https://github.com/abjoru/muralis/issues/9). Doing it first front-loads a
-daemon change and JSON framing work before we know the widget's shape is right.
+**Extend the IPC protocol first, then speak the socket.** Rejected — but see
+the amendment below, which adopts the push half of it via a streaming CLI
+command rather than socket access. Consumers speaking the socket directly stays
+rejected.
 
 **Spawn the CLI for everything.** Chosen. One transport, one failure mode in the
 Consumer, no protocol framing re-implemented in a foreign codebase. It also
@@ -31,12 +31,6 @@ socket paths only as presence probes.
 
 ## Consequences
 
-The daemon cannot push. `send_request` writes one line, shuts down the writer,
-reads one line, returns — there is no subscription. A Consumer therefore cannot
-learn that a timed rotation changed the wallpaper, and the DMS Widget's bar pill
-is knowingly stale between rotations in v1. Accepted deliberately: the
-alternative is a timer spawning a process on an idle machine forever.
-
 The **CLI contract** spans two backing stores — the DB for favorites, the socket
 for status and mutations — so a Consumer sees a working grid and a failing
 status when the daemon is down. Consumers must render that split, not treat
@@ -44,3 +38,28 @@ daemon-down as all-or-nothing.
 
 Swapping transport later does not disturb Consumer UI, provided each Consumer
 keeps command invocation behind the function that loads its model.
+
+## Amendment: streaming commands are part of this decision
+
+Originally this ADR accepted that Consumers cannot be told about wallpaper
+changes they did not initiate, since the socket is one-shot. That was priced as
+a stale label in the DMS Widget's bar pill and accepted for v1.
+
+It was mispriced. A Consumer syncing a wallpaper change into DankMaterialShell
+calls `SessionData.setWallpaper()`, which regenerates the shell's entire matugen
+palette from the image. "No push" therefore means the desktop's accent colours
+silently stop matching the wallpaper after every timed rotation — a visible
+defect, not a cosmetic limitation. See [#9](https://github.com/abjoru/muralis/issues/9).
+
+The fix does not overturn this decision, it extends it: push arrives as a
+streaming `muralis subscribe` command writing newline-delimited JSON to stdout,
+not as socket access from the Consumer. Consumers still drive muralis through
+the CLI. A long-lived child process with a line parser on stdout is how
+DankMaterialShell consumes every other stream it has, so this stays inside both
+codebases' existing patterns.
+
+The corollary is that **the CLI contract includes streaming commands, not only
+request/response ones** — and that a Consumer holding a long-lived child process
+owes it a reconnect policy, since a daemon restart kills the stream and a
+Consumer that fails to restart it goes deaf exactly like the polling design this
+replaces.
