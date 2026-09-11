@@ -100,20 +100,28 @@ word stays reserved for a source crate, so the directory and all our prose say
 _Avoid_: DMS plugin, wallpaper tab (it replaced one; it is not one)
 
 **Consumer**:
-Anything outside the workspace that drives muralis through the **CLI contract**
+Anything outside the workspace that drives muralis through the **IPC contract**
 rather than linking `muralis-core`. The **DMS Widget** is the first. A Consumer
-is a client of the contract and never a **Source**.
+is a client of the contract and never a **Source**. Consumers are not the
+audience for the **CLI contract** — that seam serves scripts, keybinds and
+humans.
+
+**IPC contract**:
+The daemon socket protocol a **Consumer** depends on: the `IpcRequest` /
+`IpcResponse` variants and the event stream a subscriber holds open. Being a
+contract is what distinguishes it from the daemon's internals — variant names
+and response field names are a compatibility promise, not free to churn. It
+carries two shapes: request/response, and a subscription the Consumer keeps
+open and reconnects to.
+_Avoid_: API (reserve for a remote **Source**'s HTTP API)
 
 **CLI contract**:
-The subset of `muralis` CLI commands and their JSON output that a **Consumer**
-depends on — favorites listing, daemon status, set/next/prev/pause/resume/mode,
-and the streaming `subscribe`. Being a contract is what distinguishes it from
-the rest of the CLI surface: its command names and output field names are a
-compatibility promise to Consumers, not an implementation detail free to churn.
-It carries two shapes, not one — request/response commands that exit, and
-streaming commands a Consumer holds open and must reconnect to.
-_Avoid_: API (reserve for a remote **Source**'s HTTP API), IPC (that is the
-daemon socket, a different seam)
+The subset of `muralis` CLI commands and their JSON output that scripts,
+keybinds and humans depend on. Distinct from the **IPC contract** in audience,
+not just in wire format: the CLI keeps promises the IPC contract does not, such
+as `favorites list` answering from the database with the daemon down. A
+**Consumer** does not use it.
+_Avoid_: API, treating it as the Consumer seam (that is the **IPC contract**)
 
 ## Relationships
 
@@ -124,7 +132,7 @@ daemon socket, a different seam)
 - `create_sources` takes a **SourceContext** (global cross-cutting knobs: **Content Safety policy**, `min_width`/`min_height`) in addition to the `[sources]` table + client. The contract is the same for every plugin.
 - A gelbooru **Flavor** instance points at any gelbooru-clone host by `base` (gelbooru, rule34, safebooru, realbooru) — multi-host for free.
 - A **Preview** becomes a **Wallpaper** when kept; the **Library** is every Wallpaper. Nothing distinguishes Wallpapers within the Library — there is no favorite flag.
-- A **Consumer** (e.g. the **DMS Widget**) depends only on the **CLI contract**; it never links `muralis-core` and never registers as a **Source**.
+- A **Consumer** (e.g. the **DMS Widget**) depends only on the **IPC contract**; it never links `muralis-core` and never registers as a **Source**.
 
 ## Example dialogue
 

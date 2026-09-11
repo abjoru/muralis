@@ -1,8 +1,14 @@
 ---
-status: accepted
+status: superseded by ADR-0002
 ---
 
 # Consumers drive muralis through the CLI, not the daemon socket
+
+> **Superseded by [ADR 0002](0002-consumers-speak-the-daemon-socket.md).** The
+> claim below that DankMaterialShell's QML never speaks raw sockets is false — it
+> does, via its `DankSocket` wrapper, which also supplies the reconnect policy
+> this ADR's amendment left as an open problem. Kept as a record of the reasoning
+> and of what the correction was.
 
 A **Consumer** (first: the **DMS Widget**) spawns `muralis` as a subprocess and
 parses its JSON, rather than connecting to the daemon's Unix socket at

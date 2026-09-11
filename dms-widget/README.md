@@ -47,48 +47,55 @@ setting `wallpaper` to disabled in `dashTabs` in
 
 `SettingsData.visibleDashTabIds()` reads this; the tab disappears from DankDash.
 
-## CLI contract
+## IPC contract
 
-Everything the widget needs, via `Proc.runCommand`:
+The widget speaks the daemon socket directly through `DankSocket` (`qs.Common`),
+which supplies backoff, jitter, redial and the newline-JSON framing muralis
+already uses. See ADR 0002.
 
-| Command | Used for |
+| `IpcRequest` | Used for |
 | --- | --- |
-| `muralis favorites list` | grid contents: the whole library, JSON array |
-| `muralis status` | current wallpaper, mode, paused, count |
-| `muralis set <id>` | click-to-set |
-| `muralis next` / `muralis prev` | transport |
-| `muralis pause` / `muralis resume` | rotation toggle |
-| `muralis mode <mode>` | static, random, random_startup, sequential, workspace, schedule |
-| `muralis subscribe` | push: wallpaper-changed events, held open ([#9](https://github.com/abjoru/muralis/issues/9)) |
+| `Favorites` | grid contents: the whole library ([#10](https://github.com/abjoru/muralis/issues/10)) |
+| `Status` | current wallpaper, mode, paused, count |
+| `SetWallpaper { id }` | click-to-set |
+| `Next` / `Prev` | transport |
+| `Pause` / `Resume` | rotation toggle |
+| `SetMode { mode }` | static, random, random_startup, sequential, workspace, schedule |
+| `Subscribe` | push: wallpaper-changed events, held open ([#9](https://github.com/abjoru/muralis/issues/9)) |
+
+Both `Favorites` and `Subscribe` are unbuilt — the widget cannot ship before
+them.
 
 Entries carry `id`, `source_type`, `source_id`, `source_url`,
 `width`, `height`, `tags`, `file_path`, `added_at`, `last_used`, `use_count`.
 
-`status` returns `current_wallpaper`, `mode`, `next_change`, `paused`,
+`Status` returns `current_wallpaper`, `mode`, `next_change`, `paused`,
 `running`, `wallpaper_count`.
 
 Thumbnails are read directly from `~/.cache/muralis/thumbnails/<id>_thumb.jpg`,
 one per Wallpaper — not through the CLI.
 
 On every wallpaper change — the widget's own, and rotations arriving over
-`subscribe` — the widget calls `SessionData.setWallpaper(file_path)`. That is not
+`Subscribe` — the widget calls `SessionData.setWallpaper(file_path)`. That is not
 bookkeeping: it regenerates DMS's whole matugen palette from the image, which is
 why push is a v1 blocker rather than a nicety. See ADR 0001.
 
-`subscribe` is a long-lived child process, so the widget owes it a reconnect
-policy: a daemon restart kills the stream, and failing to restart it leaves the
-widget silently deaf.
+Reconnection is not ours to design: `DankSocket` redials with exponential
+backoff and jitter, capped at 15s, allocating a fresh socket per attempt.
 
 ## Failure states
 
-Four states, three of which the widget must render rather than hide.
+Four states, three of which the widget must render rather than hide. Note the
+daemon-down row is a deliberate regression from the CLI design: the grid used to
+survive it by reading the database directly. One honest failure beats a
+half-working widget — see ADR 0002.
 
-| State | `favorites list` | `status` | Widget |
-| --- | --- | --- | --- |
-| muralis not installed | spawn fails | spawn fails | never loads — `StartupCheck.qml` blocks activation with an install hint |
-| daemon down | exit 0, JSON | exit 1, empty stdout | grid usable, transport and mode controls disabled, pill says so |
-| daemon up, nothing applied | exit 0, JSON | exit 0, `current_wallpaper: null` | says so explicitly; grid usable, one click fixes it |
-| empty library | `[]` | exit 0, `wallpaper_count: 0` | empty-state pointing at `muralis search` |
+| State | Socket | Widget |
+| --- | --- | --- |
+| muralis not installed | — | never loads — `StartupCheck.qml` blocks activation with an install hint |
+| daemon down | connect fails, DankSocket retrying | one honest state: "muralis is not running". No grid — it lives behind the same socket |
+| daemon up, nothing applied | connects, `current_wallpaper: null` | says so explicitly; grid usable, one click fixes it |
+| empty library | connects, `wallpaper_count: 0` | empty-state pointing at `muralis search` |
 
 Note `dependencies` in the manifest gates nothing — the schema calls it registry
 metadata, and neither it nor its deprecated alias `requires` is enforced anywhere
@@ -108,7 +115,7 @@ lands; it will not become impossible, since any backend hiccup reproduces it.
 First cut is parity with the old WallpaperTab patch: library grid with
 thumbnails and paging, click-to-set, next/prev, pause/resume, mode switch,
 SessionData sync, and selection following `current_wallpaper` — plus consuming
-`muralis subscribe`, so the pill and the palette stay correct through timed
+`Subscribe`, so the pill and the palette stay correct through timed
 rotations the widget did not initiate.
 
 Search, tag filtering, per-monitor wallpapers and source browsing are
