@@ -1609,7 +1609,7 @@ dependencies = [
 
 [[package]]
 name = "muralis"
-version = "0.2.4"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -1631,7 +1631,7 @@ dependencies = [
 
 [[package]]
 name = "muralis-core"
-version = "0.2.4"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1655,7 +1655,7 @@ dependencies = [
 
 [[package]]
 name = "muralis-daemon"
-version = "0.2.4"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1673,7 +1673,7 @@ dependencies = [
 
 [[package]]
 name = "muralis-source-booru"
-version = "0.2.4"
+version = "0.3.0"
 dependencies = [
  "muralis-core",
  "muralis-source-common",
@@ -1687,7 +1687,7 @@ dependencies = [
 
 [[package]]
 name = "muralis-source-common"
-version = "0.2.4"
+version = "0.3.0"
 dependencies = [
  "async-trait",
  "bytes",
@@ -1700,7 +1700,7 @@ dependencies = [
 
 [[package]]
 name = "muralis-source-feed"
-version = "0.2.4"
+version = "0.3.0"
 dependencies = [
  "async-trait",
  "bytes",
@@ -1717,7 +1717,7 @@ dependencies = [
 
 [[package]]
 name = "muralis-source-pexels"
-version = "0.2.4"
+version = "0.3.0"
 dependencies = [
  "muralis-core",
  "muralis-source-common",
@@ -1730,7 +1730,7 @@ dependencies = [
 
 [[package]]
 name = "muralis-source-pixabay"
-version = "0.2.4"
+version = "0.3.0"
 dependencies = [
  "muralis-core",
  "muralis-source-common",
@@ -1743,7 +1743,7 @@ dependencies = [
 
 [[package]]
 name = "muralis-source-unsplash"
-version = "0.2.4"
+version = "0.3.0"
 dependencies = [
  "muralis-core",
  "muralis-source-common",
@@ -1756,7 +1756,7 @@ dependencies = [
 
 [[package]]
 name = "muralis-source-wallhaven"
-version = "0.2.4"
+version = "0.3.0"
 dependencies = [
  "muralis-core",
  "muralis-source-common",
