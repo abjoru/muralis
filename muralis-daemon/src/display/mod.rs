@@ -3,7 +3,7 @@ pub mod scheduler;
 
 use tokio::sync::oneshot;
 
-use muralis_core::ipc::DaemonStatus;
+use muralis_core::ipc::{DaemonStatus, FavoritesPage};
 use muralis_core::models::DisplayMode;
 
 pub enum DaemonCommand {
@@ -12,6 +12,11 @@ pub enum DaemonCommand {
     },
     Next,
     Prev,
+    Favorites {
+        offset: Option<u32>,
+        limit: Option<u32>,
+        respond: oneshot::Sender<Result<FavoritesPage, String>>,
+    },
     SetWallpaper {
         id: String,
         respond: oneshot::Sender<Result<(), String>>,

@@ -10,8 +10,22 @@ pub enum IpcRequest {
     Status,
     Next,
     Prev,
-    SetWallpaper { id: String },
-    SetMode { mode: DisplayMode },
+    SetWallpaper {
+        id: String,
+    },
+    SetMode {
+        mode: DisplayMode,
+    },
+    /// The **Library** — every kept wallpaper. A bare `favorites` asks for all
+    /// of it; `offset`/`limit` window it for a Consumer that draws a page at a
+    /// time. A row serializes to ~445 B, so a 1000-wallpaper Library is a
+    /// ~435 KiB single socket line, against ~7 KiB for a 16-item grid page.
+    Favorites {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        offset: Option<u32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        limit: Option<u32>,
+    },
     Pause,
     Resume,
     Reload,
@@ -42,6 +56,15 @@ pub struct DaemonStatus {
     /// succeeds. A Consumer reads this to tell "nothing applied yet" apart from
     /// "the backend refused" — the failure used to be a `warn!` nobody saw.
     pub last_error: Option<String>,
+}
+
+/// The `Favorites` response: one window onto the **Library**, plus the total so
+/// a Consumer can size its scrollbar without asking for everything.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FavoritesPage {
+    pub wallpapers: Vec<crate::models::Wallpaper>,
+    pub total: u32,
+    pub offset: u32,
 }
 
 impl IpcResponse {
@@ -145,6 +168,41 @@ mod tests {
         let json = serde_json::to_string(&resp).unwrap();
         assert!(json.contains("abc123"));
         assert!(json.contains("42"));
+    }
+
+    #[test]
+    fn favorites_asks_for_the_whole_library_by_default() {
+        // The CLI contract is "the whole Library"; paging is the Consumer's
+        // opt-in, so the bare command must carry no window at all.
+        let json = r#"{"command":"favorites"}"#;
+        let req: IpcRequest = serde_json::from_str(json).unwrap();
+        assert!(matches!(
+            req,
+            IpcRequest::Favorites {
+                offset: None,
+                limit: None
+            }
+        ));
+
+        let line = serde_json::to_string(&IpcRequest::Favorites {
+            offset: None,
+            limit: None,
+        })
+        .unwrap();
+        assert_eq!(line, r#"{"command":"favorites"}"#);
+    }
+
+    #[test]
+    fn favorites_carries_a_window_when_a_consumer_pages() {
+        let json = r#"{"command":"favorites","offset":32,"limit":16}"#;
+        let req: IpcRequest = serde_json::from_str(json).unwrap();
+        assert!(matches!(
+            req,
+            IpcRequest::Favorites {
+                offset: Some(32),
+                limit: Some(16)
+            }
+        ));
     }
 
     #[test]

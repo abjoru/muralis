@@ -103,6 +103,27 @@ async fn dispatch_request(
             let _ = cmd_tx.send(DaemonCommand::Prev).await;
             IpcResponse::ok()
         }
+        IpcRequest::Favorites { offset, limit } => {
+            let (tx, rx) = oneshot::channel();
+            if cmd_tx
+                .send(DaemonCommand::Favorites {
+                    offset,
+                    limit,
+                    respond: tx,
+                })
+                .await
+                .is_err()
+            {
+                return IpcResponse::error("engine unavailable");
+            }
+            match rx.await {
+                Ok(Ok(page)) => {
+                    IpcResponse::ok_with_data(serde_json::to_value(page).unwrap_or_default())
+                }
+                Ok(Err(msg)) => IpcResponse::error(msg),
+                Err(_) => IpcResponse::error("engine dropped response"),
+            }
+        }
         IpcRequest::SetWallpaper { id } => {
             let (tx, rx) = oneshot::channel();
             if cmd_tx
@@ -149,5 +170,49 @@ async fn dispatch_request(
             let _ = cmd_tx.send(DaemonCommand::Quit).await;
             IpcResponse::ok()
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use muralis_core::ipc::FavoritesPage;
+
+    /// Drives one request through the dispatcher against a stand-in engine that
+    /// answers `Favorites` with a fixed page.
+    async fn dispatch_line(line: &str) -> IpcResponse {
+        let (cmd_tx, mut cmd_rx) = mpsc::channel(1);
+        tokio::spawn(async move {
+            while let Some(cmd) = cmd_rx.recv().await {
+                if let DaemonCommand::Favorites {
+                    offset, respond, ..
+                } = cmd
+                {
+                    let _ = respond.send(Ok(FavoritesPage {
+                        wallpapers: Vec::new(),
+                        total: 7,
+                        offset: offset.unwrap_or(0),
+                    }));
+                }
+            }
+        });
+        let request: IpcRequest = serde_json::from_str(line).unwrap();
+        dispatch_request(request, &cmd_tx).await
+    }
+
+    #[tokio::test]
+    async fn favorites_answers_a_page_on_the_wire() {
+        let resp = dispatch_line(r#"{"command":"favorites","offset":16,"limit":16}"#).await;
+
+        let data = match resp {
+            IpcResponse::Ok { data: Some(data) } => data,
+            other => panic!("expected a served page, got {other:?}"),
+        };
+        let page: FavoritesPage = serde_json::from_value(data).unwrap();
+        assert_eq!(page.total, 7);
+        assert_eq!(
+            page.offset, 16,
+            "the window the Consumer asked for comes back"
+        );
     }
 }

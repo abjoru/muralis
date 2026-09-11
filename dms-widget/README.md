@@ -55,7 +55,7 @@ already uses. See ADR 0002.
 
 | `IpcRequest` | Used for |
 | --- | --- |
-| `Favorites` | grid contents: the whole library ([#10](https://github.com/abjoru/muralis/issues/10)) |
+| `Favorites { offset, limit }` | grid contents: a window onto the library, or the whole thing when both are omitted |
 | `Status` | current wallpaper, mode, paused, count |
 | `SetWallpaper { id }` | click-to-set |
 | `Next` / `Prev` | transport |
@@ -63,8 +63,7 @@ already uses. See ADR 0002.
 | `SetMode { mode }` | static, random, random_startup, sequential, workspace, schedule — offered per `available_modes` ([#14](https://github.com/abjoru/muralis/issues/14)) |
 | `Subscribe` | push: wallpaper-changed events, held open ([#9](https://github.com/abjoru/muralis/issues/9)) |
 
-Both `Favorites` and `Subscribe` are unbuilt — the widget cannot ship before
-them.
+`Subscribe` is unbuilt — the widget cannot ship before it.
 
 ### Mode switching
 
@@ -79,8 +78,12 @@ so the widget's filtering is a courtesy, not the safety net.
 A mode chosen here persists to `config.toml` ([#12](https://github.com/abjoru/muralis/issues/12));
 until that lands it silently reverts on daemon restart.
 
-Entries carry `id`, `source_type`, `source_id`, `source_url`,
-`width`, `height`, `tags`, `file_path`, `added_at`, `last_used`, `use_count`.
+`Favorites` answers with `wallpapers`, `total` and the `offset` it served, so the
+grid can size its scrollbar without holding the whole library. Entries carry
+`id`, `source_type`, `source_id`, `source_url`, `width`, `height`, `tags`,
+`file_path`, `added_at`, `last_used`, `use_count` — ~445 B each, so the 16-item
+page the grid draws is ~7 KiB where a 1000-wallpaper library would be ~435 KiB in
+one socket line.
 
 `Status` returns `current_wallpaper`, `mode`, `next_change`, `paused`,
 `running`, `wallpaper_count`, `last_error`.

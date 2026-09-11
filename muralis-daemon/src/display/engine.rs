@@ -9,7 +9,7 @@ use muralis_core::backend::{wait_until_ready, ReadinessPolicy, WallpaperBackend}
 use muralis_core::cache;
 use muralis_core::config::Config;
 use muralis_core::db::Database;
-use muralis_core::ipc::DaemonStatus;
+use muralis_core::ipc::{DaemonStatus, FavoritesPage};
 use muralis_core::models::{DisplayMode, Wallpaper};
 use muralis_core::paths::MuralisPaths;
 
@@ -112,6 +112,9 @@ impl DisplayEngine {
                             self.prev().await;
                             self.update_next_change(tick_duration);
                             timer.reset();
+                        }
+                        DaemonCommand::Favorites { offset, limit, respond } => {
+                            let _ = respond.send(self.favorites(offset, limit));
                         }
                         DaemonCommand::SetWallpaper { id, respond } => {
                             let result = self.set_wallpaper(&id).await;
@@ -275,6 +278,27 @@ impl DisplayEngine {
         info!(mode = %mode, "display mode changed");
         self.mode = mode;
         Ok(())
+    }
+
+    /// One window onto the **Library**, read from the store rather than the
+    /// engine's rotation cache: `favorites add` writes the DB directly, so a
+    /// Consumer asking right after favoriting would otherwise miss its own
+    /// wallpaper until the next reload.
+    fn favorites(&self, offset: Option<u32>, limit: Option<u32>) -> Result<FavoritesPage, String> {
+        let db = Database::open(&self.paths.db_path()).map_err(|e| e.to_string())?;
+        let all = db.list_wallpapers().map_err(|e| e.to_string())?;
+        let total = all.len() as u32;
+        let offset = offset.unwrap_or(0);
+        let wallpapers = all
+            .into_iter()
+            .skip(offset as usize)
+            .take(limit.map_or(usize::MAX, |l| l as usize))
+            .collect();
+        Ok(FavoritesPage {
+            wallpapers,
+            total,
+            offset,
+        })
     }
 
     async fn set_wallpaper(&mut self, id: &str) -> muralis_core::error::Result<()> {
@@ -495,6 +519,85 @@ mod tests {
         }];
 
         (engine, tmp)
+    }
+
+    /// Rows in the engine's own store, `added_at` descending like the DB
+    /// orders them, so `wp0` is newest.
+    fn seed_library(engine: &DisplayEngine, count: u32) {
+        let db = Database::open(&engine.paths.db_path()).unwrap();
+        for i in 0..count {
+            db.insert_wallpaper(&Wallpaper {
+                id: format!("wp{i}"),
+                source_type: SourceType::new("test"),
+                source_id: format!("wp{i}"),
+                source_url: None,
+                width: 5120,
+                height: 1440,
+                tags: Vec::new(),
+                file_path: format!("/tmp/wp{i}.jpg"),
+                added_at: format!("2026-09-{:02}T00:00:00Z", 30 - i),
+                last_used: None,
+                use_count: 0,
+            })
+            .unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn favorites_serves_the_library_from_the_store_not_a_stale_cache() {
+        let (engine, _tmp) = engine_with(FakeBackend::ready_at(1));
+        // `favorites add` writes the DB behind the daemon's back; a Consumer
+        // that just favorited must see it without a reload.
+        seed_library(&engine, 3);
+
+        let page = engine.favorites(None, None).unwrap();
+
+        assert_eq!(page.total, 3);
+        assert_eq!(page.offset, 0);
+        assert_eq!(
+            page.wallpapers
+                .iter()
+                .map(|w| w.id.as_str())
+                .collect::<Vec<_>>(),
+            ["wp0", "wp1", "wp2"],
+            "the whole Library, newest first"
+        );
+    }
+
+    #[tokio::test]
+    async fn favorites_windows_the_library_for_a_paging_consumer() {
+        let (engine, _tmp) = engine_with(FakeBackend::ready_at(1));
+        seed_library(&engine, 5);
+
+        let page = engine.favorites(Some(2), Some(2)).unwrap();
+
+        assert_eq!(
+            page.wallpapers
+                .iter()
+                .map(|w| w.id.as_str())
+                .collect::<Vec<_>>(),
+            ["wp2", "wp3"],
+            "the window starts at the offset and is no longer than the limit"
+        );
+        assert_eq!(page.offset, 2, "the window says where it sits");
+        assert_eq!(
+            page.total, 5,
+            "total counts the whole Library, not the page"
+        );
+    }
+
+    #[tokio::test]
+    async fn favorites_past_the_end_is_an_empty_page_not_an_error() {
+        let (engine, _tmp) = engine_with(FakeBackend::ready_at(1));
+        seed_library(&engine, 3);
+
+        let page = engine.favorites(Some(10), Some(16)).unwrap();
+
+        assert!(page.wallpapers.is_empty());
+        assert_eq!(
+            page.total, 3,
+            "a Consumer scrolling past the end still learns the size"
+        );
     }
 
     #[tokio::test]

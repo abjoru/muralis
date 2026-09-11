@@ -164,6 +164,19 @@ carries two shapes: request/response, and a subscription the Consumer keeps
 open and reconnects to.
 _Avoid_: API (reserve for a remote **Source**'s HTTP API)
 
+**Favorites request**:
+The **IPC contract**'s read of the **Library**: `Favorites { offset, limit }`,
+answered with a `FavoritesPage` (`wallpapers`, `total`, `offset`). Both bounds
+are optional and a bare `favorites` means the whole Library — the **CLI
+contract**'s shape — while a **Consumer** drawing a grid asks for the window it
+draws. Paging is on the wire because the numbers say so: a **Wallpaper** row is
+~445 B of JSON, so a 1000-wallpaper Library is a ~435 KiB single socket line
+against ~7 KiB for a 16-item page. The daemon reads the database per request
+rather than serving its rotation cache, because `favorites add` writes the store
+behind the daemon's back and a Consumer must see the wallpaper it just kept.
+_Avoid_: library request (the command name is `Favorites`, historical like the
+CLI's), listFavorites
+
 **CLI contract**:
 The subset of `muralis` CLI commands and their JSON output that scripts,
 keybinds and humans depend on. Distinct from the **IPC contract** in audience,
@@ -182,6 +195,7 @@ _Avoid_: API, treating it as the Consumer seam (that is the **IPC contract**)
 - A gelbooru **Flavor** instance points at any gelbooru-clone host by `base` (gelbooru, rule34, safebooru, realbooru) — multi-host for free.
 - A **Preview** becomes a **Wallpaper** when kept; the **Library** is every Wallpaper. Nothing distinguishes Wallpapers within the Library — there is no favorite flag.
 - A **Consumer** (e.g. the **DMS Widget**) depends only on the **IPC contract**; it never links `muralis-core` and never registers as a **Source**.
+- The **Library** has exactly one backing store behind both seams: the daemon answers the **Favorites request** from the database, and `favorites list` falls back to that same database only when the daemon cannot answer.
 - A **Mode write-through** precedes the mode taking effect, so a refused or
   unwritable config leaves the daemon on the mode it already had.
 - **Mode viability** is read from the `Config` alone — never from the daemon's running state — so `SetMode` and `status` cannot disagree about which modes are usable.
