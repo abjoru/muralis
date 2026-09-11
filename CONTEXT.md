@@ -72,6 +72,31 @@ The fixed number of upstream API pages a **RestSource** maps to one logical page
 The transport seam behind **RestSource**, at bytes level: `get(url, headers, query) -> (StatusCode, Bytes)`. Lives in `muralis-source-common`. The real adapter wraps `reqwest`; the test adapter returns canned bytes and asserts the auth header and pagination params. Auth injection and JSON parsing live in **RestSource**, not behind this seam.
 _Avoid_: HttpClient, Transport, Fetcher
 
+### Consumers
+
+**DMS Widget**:
+The DankBar surface (in `dms-widget/`) that drives muralis from
+DankMaterialShell — a **Consumer**, not a **Source**. It adds no wallpapers; it
+reads favorites and drives rotation through the CLI. DMS's own vocabulary calls
+this a *plugin* (`plugin.json`, `dms plugins install`); inside this repo that
+word stays reserved for a source crate, so the directory and all our prose say
+*widget*.
+_Avoid_: DMS plugin, wallpaper tab (it replaced one; it is not one)
+
+**Consumer**:
+Anything outside the workspace that drives muralis through the **CLI contract**
+rather than linking `muralis-core`. The **DMS Widget** is the first. A Consumer
+is a client of the contract and never a **Source**.
+
+**CLI contract**:
+The subset of `muralis` CLI commands and their JSON output that a **Consumer**
+depends on — favorites listing, daemon status, set/next/prev/pause/resume/mode.
+Being a contract is what distinguishes it from the rest of the CLI surface:
+its command names and output field names are a compatibility promise to
+Consumers, not an implementation detail free to churn.
+_Avoid_: API (reserve for a remote **Source**'s HTTP API), IPC (that is the
+daemon socket, a different seam)
+
 ## Relationships
 
 - A **RestSource** is built from exactly one **Source Descriptor** and one **HttpFetch** adapter.
@@ -80,6 +105,7 @@ _Avoid_: HttpClient, Transport, Fetcher
 - The `SourceRegistry` holds **Sources** (any mix of **RestSource**, **Booru Source**, **Pixabay Source**, **Feed Source**).
 - `create_sources` takes a **SourceContext** (global cross-cutting knobs: **Content Safety policy**, `min_width`/`min_height`) in addition to the `[sources]` table + client. The contract is the same for every plugin.
 - A gelbooru **Flavor** instance points at any gelbooru-clone host by `base` (gelbooru, rule34, safebooru, realbooru) — multi-host for free.
+- A **Consumer** (e.g. the **DMS Widget**) depends only on the **CLI contract**; it never links `muralis-core` and never registers as a **Source**.
 
 ## Example dialogue
 
