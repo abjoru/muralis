@@ -60,11 +60,24 @@ already uses. See ADR 0002.
 | `SetWallpaper { id }` | click-to-set |
 | `Next` / `Prev` | transport |
 | `Pause` / `Resume` | rotation toggle |
-| `SetMode { mode }` | static, random, random_startup, sequential, workspace, schedule |
+| `SetMode { mode }` | static, random, random_startup, sequential, workspace, schedule — offered per `available_modes` ([#14](https://github.com/abjoru/muralis/issues/14)) |
 | `Subscribe` | push: wallpaper-changed events, held open ([#9](https://github.com/abjoru/muralis/issues/9)) |
 
 Both `Favorites` and `Subscribe` are unbuilt — the widget cannot ship before
 them.
+
+### Mode switching
+
+`workspace` and `schedule` only function when `config.toml` declares workspaces
+or schedules, and the widget is not a config editor. It offers the modes the
+daemon reports as usable in `available_modes` ([#14](https://github.com/abjoru/muralis/issues/14))
+and greys out the rest with the reason, rather than presenting six equal choices
+of which two may silently stop the wallpaper changing. The daemon refuses an
+unusable mode regardless ([#13](https://github.com/abjoru/muralis/issues/13)),
+so the widget's filtering is a courtesy, not the safety net.
+
+A mode chosen here persists to `config.toml` ([#12](https://github.com/abjoru/muralis/issues/12));
+until that lands it silently reverts on daemon restart.
 
 Entries carry `id`, `source_type`, `source_id`, `source_url`,
 `width`, `height`, `tags`, `file_path`, `added_at`, `last_used`, `use_count`.
