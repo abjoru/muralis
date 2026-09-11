@@ -83,7 +83,12 @@ Entries carry `id`, `source_type`, `source_id`, `source_url`,
 `width`, `height`, `tags`, `file_path`, `added_at`, `last_used`, `use_count`.
 
 `Status` returns `current_wallpaper`, `mode`, `next_change`, `paused`,
-`running`, `wallpaper_count`.
+`running`, `wallpaper_count`, `last_error`.
+
+`last_error` is why the daemon's last apply failed, `null` once one succeeds
+([#11](https://github.com/abjoru/muralis/issues/11)). It is what separates
+"nothing applied yet" from "the backend refused" — the widget shows the reason
+rather than inventing one.
 
 Thumbnails are read directly from `~/.cache/muralis/thumbnails/<id>_thumb.jpg`,
 one per Wallpaper — not through the CLI.
@@ -107,7 +112,7 @@ half-working widget — see ADR 0002.
 | --- | --- | --- |
 | muralis not installed | — | never loads — `StartupCheck.qml` blocks activation with an install hint |
 | daemon down | connect fails, DankSocket retrying | one honest state: "muralis is not running". No grid — it lives behind the same socket |
-| daemon up, nothing applied | connects, `current_wallpaper: null` | says so explicitly; grid usable, one click fixes it |
+| daemon up, nothing applied | connects, `current_wallpaper: null`, maybe `last_error` | says so explicitly, with `last_error` as the reason when there is one; grid usable, one click fixes it |
 | empty library | connects, `wallpaper_count: 0` | empty-state pointing at `muralis search` |
 
 Note `dependencies` in the manifest gates nothing — the schema calls it registry
@@ -115,13 +120,14 @@ metadata, and neither it nor its deprecated alias `requires` is enforced anywher
 in `PluginService.qml` or the installer. `startupCheck` is the only real gate.
 
 The third row is a real state, not a hypothetical: muralis applies its
-`random_startup` wallpaper exactly once and drops backend failures silently, so
-losing a startup race leaves a wallpaper on screen that muralis does not know
-about ([#11](https://github.com/abjoru/muralis/issues/11)). Reporting "nothing
+`random_startup` wallpaper exactly once, so losing the startup race with the
+backend daemon left a wallpaper on screen that muralis did not know about
+([#11](https://github.com/abjoru/muralis/issues/11)). Reporting "nothing
 selected" there would read as the widget being broken, when the truth is that the
 daemon applied nothing this session. The widget says which, because it is the
-only component positioned to surface it. The state should become rare once #11
-lands; it will not become impossible, since any backend hiccup reproduces it.
+only component positioned to surface it. #11 made the state rare — the daemon now
+waits for the backend before its startup apply — and no longer silent: a failure
+that does happen arrives as `last_error`.
 
 ## Scope
 

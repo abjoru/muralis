@@ -38,6 +38,10 @@ pub struct DaemonStatus {
     pub current_wallpaper: Option<String>,
     pub wallpaper_count: u32,
     pub next_change: Option<String>,
+    /// Why the last wallpaper apply failed, if it did. `None` once one
+    /// succeeds. A Consumer reads this to tell "nothing applied yet" apart from
+    /// "the backend refused" — the failure used to be a `warn!` nobody saw.
+    pub last_error: Option<String>,
 }
 
 impl IpcResponse {
@@ -134,6 +138,7 @@ mod tests {
             current_wallpaper: Some("abc123".into()),
             wallpaper_count: 42,
             next_change: Some("2025-01-01T01:00:00Z".into()),
+            last_error: None,
         };
         let data = serde_json::to_value(&status).unwrap();
         let resp = IpcResponse::ok_with_data(data);

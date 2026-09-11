@@ -5,7 +5,7 @@ use tokio::sync::mpsc;
 use tokio::time::{interval, Instant, MissedTickBehavior};
 use tracing::{info, warn};
 
-use muralis_core::backend::WallpaperBackend;
+use muralis_core::backend::{wait_until_ready, ReadinessPolicy, WallpaperBackend};
 use muralis_core::cache;
 use muralis_core::config::Config;
 use muralis_core::db::Database;
@@ -26,6 +26,8 @@ pub struct DisplayEngine {
     current_wallpaper: Option<String>,
     wallpapers: Vec<Wallpaper>,
     next_change: Option<Instant>,
+    last_error: Option<String>,
+    readiness: ReadinessPolicy,
 }
 
 impl DisplayEngine {
@@ -41,6 +43,8 @@ impl DisplayEngine {
             current_wallpaper: None,
             wallpapers: Vec::new(),
             next_change: None,
+            last_error: None,
+            readiness: ReadinessPolicy::default(),
         }
     }
 
@@ -53,7 +57,7 @@ impl DisplayEngine {
 
         // RandomStartup: pick one wallpaper at launch, then behave like Static
         if self.mode == DisplayMode::RandomStartup {
-            self.next().await;
+            self.startup_apply().await;
         }
 
         // initial cache prune
@@ -149,6 +153,28 @@ impl DisplayEngine {
         }
     }
 
+    /// The one-shot `random_startup` apply, gated on the backend's own daemon
+    /// being up. The compositor typically launches muralis and the backend
+    /// together with no sequencing, and this apply is the only one of the
+    /// session — firing it into a socket that is not bound yet means no
+    /// wallpaper until the next login.
+    async fn startup_apply(&mut self) {
+        // Nothing to apply means nothing to wait for — an empty library must
+        // not hold the daemon's startup hostage to an absent backend.
+        if self.wallpapers.is_empty() {
+            return;
+        }
+
+        if let Err(e) = wait_until_ready(self.backend.as_ref(), &self.readiness).await {
+            warn!(backend = self.backend.name(), "backend not ready: {e}");
+            self.last_error = Some(format!("backend not ready: {e}"));
+        }
+
+        // Attempt regardless: the probe is a best-effort gate, not a veto, and
+        // apply_current records its own failure.
+        self.next().await;
+    }
+
     fn reload_wallpapers(&mut self) {
         match Database::open(&self.paths.db_path()) {
             Ok(db) => match db.list_wallpapers() {
@@ -203,15 +229,24 @@ impl DisplayEngine {
                 match self.backend.set_wallpaper_all(path).await {
                     Ok(()) => {
                         self.current_wallpaper = Some(wp.id.clone());
+                        self.last_error = None;
                         if let Ok(db) = Database::open(&self.paths.db_path()) {
                             let _ = db.mark_used(&wp.id);
                         }
                         info!(id = %wp.id, "wallpaper set");
                     }
-                    Err(e) => warn!("failed to set wallpaper: {e}"),
+                    // No retry here: a mid-session failure is followed by a tick
+                    // or a user command soon enough. It is recorded rather than
+                    // only logged, so a Consumer can say the wallpaper on screen
+                    // is not the one muralis thinks it set.
+                    Err(e) => {
+                        warn!("failed to set wallpaper: {e}");
+                        self.last_error = Some(e.to_string());
+                    }
                 }
             } else {
                 warn!(path = %path.display(), "wallpaper file missing");
+                self.last_error = Some(format!("wallpaper file missing: {}", path.display()));
             }
         }
     }
@@ -271,9 +306,13 @@ impl DisplayEngine {
                     match self.backend.set_wallpaper_all(path).await {
                         Ok(()) => {
                             self.current_wallpaper = Some(wp.id.clone());
+                            self.last_error = None;
                             info!(workspace = workspace_id, id = %wp.id, "workspace wallpaper set");
                         }
-                        Err(e) => warn!("failed to set workspace wallpaper: {e}"),
+                        Err(e) => {
+                            warn!("failed to set workspace wallpaper: {e}");
+                            self.last_error = Some(e.to_string());
+                        }
                     }
                 }
             } else {
@@ -324,6 +363,7 @@ impl DisplayEngine {
                 let remaining = t.saturating_duration_since(Instant::now());
                 format!("{}s", remaining.as_secs())
             }),
+            last_error: self.last_error.clone(),
         }
     }
 
@@ -333,5 +373,200 @@ impl DisplayEngine {
         } else {
             self.next_change = None;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use async_trait::async_trait;
+    use muralis_core::backend::ReadinessPolicy;
+    use muralis_core::error::{MuralisError, Result};
+    use muralis_core::models::SourceType;
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    /// Backend that reports ready from the `ready_at`-th probe onward
+    /// (`0` = never) and only then accepts a wallpaper, like awww-daemon.
+    struct FakeBackend {
+        ready_at: u32,
+        probes: AtomicU32,
+    }
+
+    impl FakeBackend {
+        fn ready_at(ready_at: u32) -> Self {
+            Self {
+                ready_at,
+                probes: AtomicU32::new(0),
+            }
+        }
+
+        fn is_up(&self) -> bool {
+            self.ready_at != 0 && self.probes.load(Ordering::SeqCst) >= self.ready_at
+        }
+    }
+
+    #[async_trait]
+    impl WallpaperBackend for FakeBackend {
+        async fn set_wallpaper(&self, _path: &Path, _monitor: &str) -> Result<()> {
+            self.set_wallpaper_all(_path).await
+        }
+
+        async fn set_wallpaper_all(&self, _path: &Path) -> Result<()> {
+            if self.is_up() {
+                Ok(())
+            } else {
+                Err(MuralisError::Backend("socket not bound".into()))
+            }
+        }
+
+        async fn is_ready(&self) -> Result<()> {
+            self.probes.fetch_add(1, Ordering::SeqCst);
+            if self.is_up() {
+                Ok(())
+            } else {
+                Err(MuralisError::Backend("socket not bound".into()))
+            }
+        }
+
+        fn name(&self) -> &str {
+            "fake"
+        }
+    }
+
+    /// An engine over a throwaway XDG root, holding one wallpaper that exists
+    /// on disk. Probing is instant so tests assert behaviour, not timing.
+    fn engine_with(backend: FakeBackend) -> (DisplayEngine, tempfile::TempDir) {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = MuralisPaths {
+            config_dir: tmp.path().join("config"),
+            data_dir: tmp.path().join("data"),
+            cache_dir: tmp.path().join("cache"),
+        };
+        paths.ensure_dirs().unwrap();
+
+        let file = paths.wallpapers_dir().join("wp1.jpg");
+        std::fs::write(&file, b"not really a jpeg").unwrap();
+
+        let mut engine = DisplayEngine::new(Config::default(), paths, Box::new(backend));
+        engine.readiness = ReadinessPolicy {
+            attempts: 5,
+            initial_delay: Duration::ZERO,
+            max_delay: Duration::ZERO,
+        };
+        engine.wallpapers = vec![Wallpaper {
+            id: "wp1".into(),
+            source_type: SourceType::new("test"),
+            source_id: "wp1".into(),
+            source_url: None,
+            width: 5120,
+            height: 1440,
+            tags: Vec::new(),
+            file_path: file.to_string_lossy().into_owned(),
+            added_at: "2026-09-10T00:00:00Z".into(),
+            last_used: None,
+            use_count: 0,
+        }];
+
+        (engine, tmp)
+    }
+
+    #[tokio::test]
+    async fn failed_apply_is_visible_in_status() {
+        let (mut engine, _tmp) = engine_with(FakeBackend::ready_at(0));
+
+        engine.apply_current().await;
+
+        let status = engine.status();
+        assert!(
+            status.current_wallpaper.is_none(),
+            "nothing was applied, so nothing is current"
+        );
+        assert!(
+            status
+                .last_error
+                .as_deref()
+                .is_some_and(|e| e.contains("socket not bound")),
+            "the backend failure should reach status, got: {:?}",
+            status.last_error
+        );
+    }
+
+    #[tokio::test]
+    async fn startup_waits_for_a_backend_that_is_still_coming_up() {
+        let (mut engine, _tmp) = engine_with(FakeBackend::ready_at(3));
+        engine.mode = DisplayMode::RandomStartup;
+
+        engine.startup_apply().await;
+
+        let status = engine.status();
+        assert_eq!(
+            status.current_wallpaper.as_deref(),
+            Some("wp1"),
+            "the startup apply must survive losing the race with the backend daemon"
+        );
+        assert!(status.last_error.is_none());
+    }
+
+    #[tokio::test]
+    async fn startup_against_an_absent_backend_says_so_instead_of_going_quiet() {
+        let (mut engine, _tmp) = engine_with(FakeBackend::ready_at(0));
+        engine.mode = DisplayMode::RandomStartup;
+
+        engine.startup_apply().await;
+
+        let status = engine.status();
+        assert!(status.current_wallpaper.is_none());
+        assert!(
+            status.last_error.is_some(),
+            "a lost startup must be reportable, not only a warn! nobody reads"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_empty_library_does_not_wait_on_the_backend() {
+        let (mut engine, _tmp) = engine_with(FakeBackend::ready_at(0));
+        engine.mode = DisplayMode::RandomStartup;
+        engine.wallpapers.clear();
+
+        engine.startup_apply().await;
+
+        assert!(
+            engine.status().last_error.is_none(),
+            "with nothing to apply there is nothing to wait for, and no failure to report"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_failed_workspace_switch_is_reported_like_any_other() {
+        let (mut engine, _tmp) = engine_with(FakeBackend::ready_at(0));
+        engine.mode = DisplayMode::Workspace;
+        engine.config.workspaces = vec![muralis_core::config::WorkspaceConfig {
+            workspace: 1,
+            wallpaper: "wp1".into(),
+        }];
+
+        engine.handle_workspace_change(1).await;
+
+        assert!(engine.status().current_wallpaper.is_none());
+        assert!(engine.status().last_error.is_some());
+    }
+
+    #[tokio::test]
+    async fn a_later_success_clears_the_recorded_failure() {
+        let backend = FakeBackend::ready_at(2);
+        let (mut engine, _tmp) = engine_with(backend);
+
+        // first apply happens before any probe, so the backend is still down
+        engine.apply_current().await;
+        assert!(engine.status().last_error.is_some());
+
+        engine.startup_apply().await;
+
+        let status = engine.status();
+        assert_eq!(status.current_wallpaper.as_deref(), Some("wp1"));
+        assert!(
+            status.last_error.is_none(),
+            "a stale failure must not outlive the wallpaper that fixed it"
+        );
     }
 }

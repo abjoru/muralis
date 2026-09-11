@@ -88,6 +88,31 @@ The fixed number of upstream API pages a **RestSource** maps to one logical page
 The transport seam behind **RestSource**, at bytes level: `get(url, headers, query) -> (StatusCode, Bytes)`. Lives in `muralis-source-common`. The real adapter wraps `reqwest`; the test adapter returns canned bytes and asserts the auth header and pagination params. Auth injection and JSON parsing live in **RestSource**, not behind this seam.
 _Avoid_: HttpClient, Transport, Fetcher
 
+### Display
+
+**Backend**:
+The thing that puts a **Wallpaper** on screen, implementing `WallpaperBackend`
+(`set_wallpaper`, `set_wallpaper_all`, `is_ready`). Each one drives a separate
+long-running process of its own — awww-daemon, hyprpaper — which muralis does
+not start and cannot assume is up.
+_Avoid_: renderer, compositor (that is Hyprland), swww (that is one backend's
+binary, and it is now named awww)
+
+**Readiness probe**:
+A **Backend** answering whether its process is accepting requests yet
+(`awww query`, `hyprctl hyprpaper listactive`). Exists because the compositor
+launches muralis and the backend together with no sequencing: the `random_startup`
+apply is the only one of the session, so firing it into an unbound socket costs
+the whole session's wallpaper. The daemon probes with bounded backoff
+(`ReadinessPolicy`) before that apply, and only then.
+_Avoid_: health check (it gates one apply, it does not monitor)
+
+**last_error**:
+The `DaemonStatus` field carrying why the last apply failed, cleared by the next
+success. A backend failure used to be a `warn!` on a stderr nobody captures; this
+is the same fact on the **IPC contract**, so a **Consumer** can show a wrong
+screen as wrong.
+
 ### Consumers
 
 **DMS Widget**:
