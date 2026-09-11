@@ -59,6 +59,7 @@ Everything the widget needs, via `Proc.runCommand`:
 | `muralis next` / `muralis prev` | transport |
 | `muralis pause` / `muralis resume` | rotation toggle |
 | `muralis mode <mode>` | static, random, random_startup, sequential, workspace, schedule |
+| `muralis subscribe` | push: wallpaper-changed events, held open ([#9](https://github.com/abjoru/muralis/issues/9)) |
 
 `favorites list` entries carry `id`, `source_type`, `source_id`, `source_url`,
 `width`, `height`, `tags`, `file_path`, `added_at`, `last_used`, `use_count`.
@@ -69,14 +70,22 @@ Everything the widget needs, via `Proc.runCommand`:
 Thumbnails are read directly from `~/.cache/muralis/thumbnails/<id>_thumb.jpg`,
 one per favorite — not through the CLI.
 
-On set, the widget also calls `SessionData.setWallpaper(file_path)` so the rest
-of DMS (lock screen, blurred backgrounds, matugen theming) sees the change.
+On every wallpaper change — the widget's own, and rotations arriving over
+`subscribe` — the widget calls `SessionData.setWallpaper(file_path)`. That is not
+bookkeeping: it regenerates DMS's whole matugen palette from the image, which is
+why push is a v1 blocker rather than a nicety. See ADR 0001.
+
+`subscribe` is a long-lived child process, so the widget owes it a reconnect
+policy: a daemon restart kills the stream, and failing to restart it leaves the
+widget silently deaf.
 
 ## Scope
 
 First cut is parity with the old WallpaperTab patch: favorites grid with
 thumbnails and paging, click-to-set, next/prev, pause/resume, mode switch,
-SessionData sync, and selection following `current_wallpaper`.
+SessionData sync, and selection following `current_wallpaper` — plus consuming
+`muralis subscribe`, so the pill and the palette stay correct through timed
+rotations the widget did not initiate.
 
 Search, tag filtering, per-monitor wallpapers, favorite/unfavorite and source
 browsing are deliberately out of the first cut.
