@@ -52,6 +52,12 @@ pub struct DaemonStatus {
     pub current_wallpaper: Option<String>,
     pub wallpaper_count: u32,
     pub next_change: Option<String>,
+    /// The modes this daemon's config can actually run
+    /// (`Config::available_modes`). A Consumer offers these and greys out the
+    /// rest rather than presenting six equal choices of which two would
+    /// silently stop the wallpaper changing; one that ignores the field
+    /// behaves as before, and the daemon refuses an unusable mode regardless.
+    pub available_modes: Vec<DisplayMode>,
     /// Why the last wallpaper apply failed, if it did. `None` once one
     /// succeeds. A Consumer reads this to tell "nothing applied yet" apart from
     /// "the backend refused" — the failure used to be a `warn!` nobody saw.
@@ -162,12 +168,36 @@ mod tests {
             wallpaper_count: 42,
             next_change: Some("2025-01-01T01:00:00Z".into()),
             last_error: None,
+            available_modes: vec![DisplayMode::Static, DisplayMode::Random],
         };
         let data = serde_json::to_value(&status).unwrap();
         let resp = IpcResponse::ok_with_data(data);
         let json = serde_json::to_string(&resp).unwrap();
         assert!(json.contains("abc123"));
         assert!(json.contains("42"));
+    }
+
+    #[test]
+    fn status_names_the_usable_modes_on_the_wire() {
+        // A Consumer greys out its switcher off this array, so the names have
+        // to be the ones `SetMode` accepts back.
+        let status = DaemonStatus {
+            running: true,
+            mode: DisplayMode::Random,
+            paused: false,
+            current_wallpaper: None,
+            wallpaper_count: 0,
+            next_change: None,
+            available_modes: vec![DisplayMode::RandomStartup, DisplayMode::Schedule],
+            last_error: None,
+        };
+
+        let json = serde_json::to_string(&status).unwrap();
+
+        assert!(
+            json.contains(r#""available_modes":["random_startup","schedule"]"#),
+            "unexpected wire shape: {json}"
+        );
     }
 
     #[test]

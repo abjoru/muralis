@@ -71,6 +71,20 @@ impl Config {
         }
     }
 
+    /// The modes this config can actually run — `DisplayMode::ALL` minus the
+    /// ones `mode_unavailable_reason` has an answer for.
+    ///
+    /// Derived, never re-encoded: a **Consumer** reads this off `status` to
+    /// offer only what will work, and `SetMode` refuses on the same predicate,
+    /// so the offer and the refusal cannot drift apart.
+    pub fn available_modes(&self) -> Vec<DisplayMode> {
+        DisplayMode::ALL
+            .iter()
+            .copied()
+            .filter(|mode| self.mode_unavailable_reason(*mode).is_none())
+            .collect()
+    }
+
     /// Write `mode` through to `config.toml`, in memory and on disk.
     ///
     /// A mode is a deliberate choice, and the daemon re-reads this file at every
@@ -366,6 +380,41 @@ interval = "15m"   # every quarter hour
             wallpaper: "wp1".into(),
         });
         assert_eq!(config.mode_unavailable_reason(DisplayMode::Workspace), None);
+    }
+
+    #[test]
+    fn the_usable_set_leaves_out_what_the_config_does_not_support() {
+        let config = Config::default();
+        assert_eq!(
+            config.available_modes(),
+            vec![
+                DisplayMode::Static,
+                DisplayMode::Random,
+                DisplayMode::RandomStartup,
+                DisplayMode::Sequential,
+            ],
+            "a Consumer offering schedule or workspace here offers a mode that cannot run"
+        );
+    }
+
+    #[test]
+    fn a_configured_mode_joins_the_usable_set() {
+        let mut config = Config::default();
+        config.schedules.push(ScheduleEntry {
+            time: "08:00".into(),
+            tags: vec!["morning".into()],
+        });
+
+        let modes = config.available_modes();
+
+        assert!(
+            modes.contains(&DisplayMode::Schedule),
+            "one schedule is all schedule mode ever needed"
+        );
+        assert!(
+            !modes.contains(&DisplayMode::Workspace),
+            "workspaces are still empty, so workspace mode is still inert"
+        );
     }
 
     #[test]

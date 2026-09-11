@@ -120,8 +120,10 @@ Whether a display mode (`DisplayMode`) has the config it needs to do anything �
 (`Config::mode_unavailable_reason`) answers it, returning the reason a mode
 cannot run. `SetMode` refuses on a reason instead of accepting a mode whose
 handler would no-op forever, and the usable set a **Consumer** reads off
-`status` is derived from the same call — encoding the rule twice is how the
-refusal and the offer drift apart.
+`status` (`DaemonStatus::available_modes`, built by `Config::available_modes`
+as the modes answering `None`) is derived from the same call — encoding the
+rule twice is how the refusal and the offer drift apart. The reason itself
+stays on the refusal; `status` carries the set, not the prose.
 _Avoid_: valid mode (a mode is well-formed either way; it is the config that is
 missing), enabled
 

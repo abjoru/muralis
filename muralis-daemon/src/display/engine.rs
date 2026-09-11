@@ -414,6 +414,7 @@ impl DisplayEngine {
                 format!("{}s", remaining.as_secs())
             }),
             last_error: self.last_error.clone(),
+            available_modes: self.config.available_modes(),
         }
     }
 
@@ -643,6 +644,26 @@ mod tests {
 
         assert!(engine.set_mode(DisplayMode::Sequential).is_ok());
         assert_eq!(engine.mode, DisplayMode::Sequential);
+    }
+
+    #[tokio::test]
+    async fn status_offers_only_the_modes_this_config_can_run() {
+        let (mut engine, _tmp) = engine_with(FakeBackend::ready_at(1));
+        engine.config.schedules.push(ScheduleEntry {
+            time: "08:00".into(),
+            tags: vec!["morning".into()],
+        });
+
+        let status = engine.status();
+
+        assert!(
+            status.available_modes.contains(&DisplayMode::Schedule),
+            "a schedule is configured, so schedule mode is on offer"
+        );
+        assert!(
+            !status.available_modes.contains(&DisplayMode::Workspace),
+            "workspace mode would no-op forever here; a Consumer must be able to tell"
+        );
     }
 
     #[tokio::test]

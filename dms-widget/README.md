@@ -70,8 +70,11 @@ already uses. See ADR 0002.
 `workspace` and `schedule` only function when `config.toml` declares workspaces
 or schedules, and the widget is not a config editor. It offers the modes the
 daemon reports as usable in `available_modes` ([#14](https://github.com/abjoru/muralis/issues/14))
-and greys out the rest with the reason, rather than presenting six equal choices
-of which two may silently stop the wallpaper changing. The daemon refuses an
+and greys out the rest, rather than presenting six equal choices of which two
+may silently stop the wallpaper changing. `available_modes` carries the set, not
+the reason — the missing precondition is always "nothing declared in
+`config.toml`", so the widget writes that itself rather than the daemon
+shipping prose for it. The daemon refuses an
 unusable mode regardless ([#13](https://github.com/abjoru/muralis/issues/13)),
 so the widget's filtering is a courtesy, not the safety net.
 
@@ -86,7 +89,10 @@ page the grid draws is ~7 KiB where a 1000-wallpaper library would be ~435 KiB i
 one socket line.
 
 `Status` returns `current_wallpaper`, `mode`, `next_change`, `paused`,
-`running`, `wallpaper_count`, `last_error`.
+`running`, `wallpaper_count`, `available_modes`, `last_error`.
+
+`available_modes` is the modes this config can actually run, in
+`DisplayMode::ALL` order — the switcher offers these and greys out the rest.
 
 `last_error` is why the daemon's last apply failed, `null` once one succeeds
 ([#11](https://github.com/abjoru/muralis/issues/11)). It is what separates
