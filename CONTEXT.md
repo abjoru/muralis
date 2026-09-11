@@ -125,6 +125,18 @@ refusal and the offer drift apart.
 _Avoid_: valid mode (a mode is well-formed either way; it is the config that is
 missing), enabled
 
+**Mode write-through**:
+A `SetMode` landing in `config.toml` before it takes effect
+(`Config::persist_mode`), so the running mode and the one the next daemon boots
+into cannot disagree. The edit is surgical — only the `mode` value moves, and the
+comments and spacing of a hand-written config survive — and a file that will not
+parse is refused rather than overwritten. A write that fails fails the command:
+a mode that works now and silently reverts at reboot is the thing being avoided.
+Pause is deliberately *not* written through; pausing rotation reads as temporary
+in a way that choosing a mode does not.
+_Avoid_: save (`Config::save` reserialized the whole file and took the comments
+with it; it is gone), autosave, sync
+
 ### Consumers
 
 **DMS Widget**:
@@ -170,6 +182,8 @@ _Avoid_: API, treating it as the Consumer seam (that is the **IPC contract**)
 - A gelbooru **Flavor** instance points at any gelbooru-clone host by `base` (gelbooru, rule34, safebooru, realbooru) — multi-host for free.
 - A **Preview** becomes a **Wallpaper** when kept; the **Library** is every Wallpaper. Nothing distinguishes Wallpapers within the Library — there is no favorite flag.
 - A **Consumer** (e.g. the **DMS Widget**) depends only on the **IPC contract**; it never links `muralis-core` and never registers as a **Source**.
+- A **Mode write-through** precedes the mode taking effect, so a refused or
+  unwritable config leaves the daemon on the mode it already had.
 - **Mode viability** is read from the `Config` alone — never from the daemon's running state — so `SetMode` and `status` cannot disagree about which modes are usable.
 
 ## Example dialogue

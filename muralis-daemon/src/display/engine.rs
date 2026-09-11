@@ -255,10 +255,21 @@ impl DisplayEngine {
     /// missing. `schedule` with no schedules and `workspace` with no workspaces
     /// have handlers that no-op forever: reporting success there means the
     /// wallpaper silently stops changing with nothing to connect it to.
+    ///
+    /// The choice is written through to `config.toml` before it takes effect,
+    /// so the running mode and the one the next daemon boots into cannot
+    /// disagree — a failed write is reported rather than leaving a mode that
+    /// works now and reverts at reboot. Pause and resume stay ephemeral on
+    /// purpose; see `Config::persist_mode`.
     fn set_mode(&mut self, mode: DisplayMode) -> Result<(), String> {
         if let Some(reason) = self.config.mode_unavailable_reason(mode) {
             warn!(mode = %mode, reason, "refused a mode that cannot run");
             return Err(reason.to_string());
+        }
+
+        if let Err(e) = self.config.persist_mode(&self.paths, mode) {
+            warn!(mode = %mode, "failed to persist display mode: {e}");
+            return Err(format!("could not save mode: {e}"));
         }
 
         info!(mode = %mode, "display mode changed");
@@ -529,6 +540,53 @@ mod tests {
 
         assert!(engine.set_mode(DisplayMode::Sequential).is_ok());
         assert_eq!(engine.mode, DisplayMode::Sequential);
+    }
+
+    #[tokio::test]
+    async fn a_chosen_mode_outlives_the_daemon_that_was_told_about_it() {
+        let (mut engine, _tmp) = engine_with(FakeBackend::ready_at(1));
+
+        engine.set_mode(DisplayMode::Sequential).unwrap();
+
+        assert_eq!(
+            Config::load(&engine.paths).unwrap().display.mode,
+            DisplayMode::Sequential,
+            "the next daemon reads config.toml, so an unwritten mode change is a lost one"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_refused_mode_is_never_written_to_the_config() {
+        let (mut engine, _tmp) = engine_with(FakeBackend::ready_at(1));
+        let original = "[display]\nmode = \"random\"\n";
+        std::fs::write(engine.paths.config_file(), original).unwrap();
+
+        assert!(engine.set_mode(DisplayMode::Schedule).is_err());
+
+        assert_eq!(
+            std::fs::read_to_string(engine.paths.config_file()).unwrap(),
+            original,
+            "a mode the daemon refuses must not be the one it boots into"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_config_that_cannot_be_written_leaves_the_mode_where_it_was() {
+        let (mut engine, _tmp) = engine_with(FakeBackend::ready_at(1));
+        // A directory where the file belongs: writable path, unwritable file.
+        std::fs::create_dir_all(engine.paths.config_file()).unwrap();
+        let before = engine.mode;
+
+        let result = engine.set_mode(DisplayMode::Sequential);
+
+        assert!(
+            result.is_err(),
+            "a mode we cannot persist is one we do not claim"
+        );
+        assert_eq!(
+            engine.mode, before,
+            "reporting success for a change that reverts at reboot is the bug being fixed"
+        );
     }
 
     #[tokio::test]
