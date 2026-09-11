@@ -55,12 +55,82 @@ impl Config {
         Self::load(paths).unwrap_or_default()
     }
 
-    pub fn save(&self, paths: &MuralisPaths) -> Result<()> {
-        let content = toml::to_string_pretty(self)
-            .map_err(|e| MuralisError::Config(format!("failed to serialize config: {e}")))?;
+    /// Why `mode` cannot run under this config, or `None` when it can.
+    ///
+    /// The single viability predicate: `SetMode` refuses on `Some` rather than
+    /// reporting success for a mode whose handler would no-op forever, and the
+    /// usable set a **Consumer** reads off `status` is the modes answering
+    /// `None`. Both read it here so the rule exists once.
+    pub fn mode_unavailable_reason(&self, mode: DisplayMode) -> Option<&'static str> {
+        match mode {
+            DisplayMode::Schedule if self.schedules.is_empty() => Some("no schedules configured"),
+            DisplayMode::Workspace if self.workspaces.is_empty() => {
+                Some("no workspaces configured")
+            }
+            _ => None,
+        }
+    }
+
+    /// The modes this config can actually run — `DisplayMode::ALL` minus the
+    /// ones `mode_unavailable_reason` has an answer for.
+    ///
+    /// Derived, never re-encoded: a **Consumer** reads this off `status` to
+    /// offer only what will work, and `SetMode` refuses on the same predicate,
+    /// so the offer and the refusal cannot drift apart.
+    pub fn available_modes(&self) -> Vec<DisplayMode> {
+        DisplayMode::ALL
+            .iter()
+            .copied()
+            .filter(|mode| self.mode_unavailable_reason(*mode).is_none())
+            .collect()
+    }
+
+    /// Write `mode` through to `config.toml`, in memory and on disk.
+    ///
+    /// A mode is a deliberate choice, and the daemon re-reads this file at every
+    /// login — leaving it in memory only is how `muralis mode static` evaporates
+    /// at the next reboot with nothing to say it ever happened.
+    ///
+    /// Pause is deliberately *not* written through. Pausing rotation reads as a
+    /// temporary act in a way that choosing a mode does not, so it stays
+    /// ephemeral; the asymmetry is intended, not this fix left half-done.
+    ///
+    /// The edit is surgical: `config.toml` is hand-written, so only the `mode`
+    /// value moves and every comment, key order and bit of spacing around it
+    /// survives. A file that does not parse is refused rather than overwritten.
+    pub fn persist_mode(&mut self, paths: &MuralisPaths, mode: DisplayMode) -> Result<()> {
         let path = paths.config_file();
-        std::fs::write(&path, content)
-            .map_err(|e| MuralisError::Config(format!("failed to write {}: {e}", path.display())))
+
+        let content = match std::fs::read_to_string(&path) {
+            Ok(content) => content,
+            // No config file yet is not an error: the daemon runs on defaults,
+            // and the choice still has to outlive the process.
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+            Err(e) => {
+                return Err(MuralisError::Config(format!(
+                    "failed to read {}: {e}",
+                    path.display()
+                )))
+            }
+        };
+
+        let mut doc = content.parse::<toml_edit::DocumentMut>().map_err(|e| {
+            MuralisError::Config(format!("failed to parse {}: {e}", path.display()))
+        })?;
+
+        doc["display"]["mode"] = toml_edit::value(mode.to_string());
+
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir).map_err(|e| {
+                MuralisError::Config(format!("failed to create {}: {e}", dir.display()))
+            })?;
+        }
+        std::fs::write(&path, doc.to_string()).map_err(|e| {
+            MuralisError::Config(format!("failed to write {}: {e}", path.display()))
+        })?;
+
+        self.display.mode = mode;
+        Ok(())
     }
 }
 
@@ -160,6 +230,209 @@ impl Default for FilterConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A throwaway XDG root holding `content` as config.toml (none when `None`).
+    fn paths_with(content: Option<&str>) -> (MuralisPaths, tempfile::TempDir) {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = MuralisPaths {
+            config_dir: tmp.path().join("config"),
+            data_dir: tmp.path().join("data"),
+            cache_dir: tmp.path().join("cache"),
+        };
+        paths.ensure_dirs().unwrap();
+        if let Some(content) = content {
+            std::fs::write(paths.config_file(), content).unwrap();
+        }
+        (paths, tmp)
+    }
+
+    #[test]
+    fn a_persisted_mode_survives_a_restart() {
+        let (paths, _tmp) = paths_with(Some("[display]\nmode = \"random_startup\"\n"));
+        let mut config = Config::load(&paths).unwrap();
+
+        config.persist_mode(&paths, DisplayMode::Static).unwrap();
+
+        assert_eq!(
+            Config::load(&paths).unwrap().display.mode,
+            DisplayMode::Static,
+            "the daemon reads config.toml at next login; the choice has to be in it"
+        );
+        assert_eq!(
+            config.display.mode,
+            DisplayMode::Static,
+            "the in-memory config must not disagree with the file it was just written to"
+        );
+    }
+
+    #[test]
+    fn persisting_a_mode_leaves_the_hand_edits_around_it_alone() {
+        let original = r#"# my wallpaper setup
+[general]
+backend = "swww"   # trailing note
+
+[display]
+mode  = "random"
+interval = "15m"   # every quarter hour
+"#;
+        let (paths, _tmp) = paths_with(Some(original));
+        let mut config = Config::load(&paths).unwrap();
+
+        config
+            .persist_mode(&paths, DisplayMode::Sequential)
+            .unwrap();
+
+        let written = std::fs::read_to_string(paths.config_file()).unwrap();
+        assert!(
+            written.contains("# my wallpaper setup"),
+            "a whole-file reserialize would drop the comments: {written}"
+        );
+        assert!(written.contains("backend = \"swww\"   # trailing note"));
+        assert!(written.contains("interval = \"15m\"   # every quarter hour"));
+        assert!(
+            written.contains("mode  = \"sequential\""),
+            "only the value changes, not the spacing the user chose: {written}"
+        );
+    }
+
+    #[test]
+    fn a_config_with_no_display_section_gains_one() {
+        let (paths, _tmp) = paths_with(Some("[general]\nbackend = \"swww\"\n"));
+        let mut config = Config::load(&paths).unwrap();
+
+        config.persist_mode(&paths, DisplayMode::Workspace).unwrap();
+
+        let reloaded = Config::load(&paths).unwrap();
+        assert_eq!(reloaded.display.mode, DisplayMode::Workspace);
+        assert_eq!(
+            reloaded.general.backend,
+            BackendType::Swww,
+            "the section we added must not disturb the one that was there"
+        );
+    }
+
+    #[test]
+    fn a_missing_config_file_is_created_rather_than_losing_the_choice() {
+        let (paths, _tmp) = paths_with(None);
+        let mut config = Config::default();
+
+        config.persist_mode(&paths, DisplayMode::Static).unwrap();
+
+        assert_eq!(
+            Config::load(&paths).unwrap().display.mode,
+            DisplayMode::Static
+        );
+    }
+
+    #[test]
+    fn a_config_that_does_not_parse_is_left_untouched() {
+        let broken = "[display\nmode = \"random\"\n";
+        let (paths, _tmp) = paths_with(Some(broken));
+        let mut config = Config::default();
+
+        let result = config.persist_mode(&paths, DisplayMode::Static);
+
+        assert!(
+            result.is_err(),
+            "a file we cannot parse is not one we can edit"
+        );
+        assert_eq!(
+            std::fs::read_to_string(paths.config_file()).unwrap(),
+            broken,
+            "refusing must not cost the user the config they have"
+        );
+    }
+
+    #[test]
+    fn schedule_is_unusable_without_schedules() {
+        let config = Config::default();
+        assert_eq!(
+            config.mode_unavailable_reason(DisplayMode::Schedule),
+            Some("no schedules configured"),
+            "schedule mode no-ops forever on an empty schedule list"
+        );
+    }
+
+    #[test]
+    fn schedule_becomes_usable_once_one_is_configured() {
+        let mut config = Config::default();
+        config.schedules.push(ScheduleEntry {
+            time: "08:00".into(),
+            tags: vec!["morning".into()],
+        });
+        assert_eq!(config.mode_unavailable_reason(DisplayMode::Schedule), None);
+    }
+
+    #[test]
+    fn workspace_is_unusable_without_workspaces() {
+        let config = Config::default();
+        assert_eq!(
+            config.mode_unavailable_reason(DisplayMode::Workspace),
+            Some("no workspaces configured"),
+        );
+    }
+
+    #[test]
+    fn workspace_becomes_usable_once_one_is_configured() {
+        let mut config = Config::default();
+        config.workspaces.push(WorkspaceConfig {
+            workspace: 1,
+            wallpaper: "wp1".into(),
+        });
+        assert_eq!(config.mode_unavailable_reason(DisplayMode::Workspace), None);
+    }
+
+    #[test]
+    fn the_usable_set_leaves_out_what_the_config_does_not_support() {
+        let config = Config::default();
+        assert_eq!(
+            config.available_modes(),
+            vec![
+                DisplayMode::Static,
+                DisplayMode::Random,
+                DisplayMode::RandomStartup,
+                DisplayMode::Sequential,
+            ],
+            "a Consumer offering schedule or workspace here offers a mode that cannot run"
+        );
+    }
+
+    #[test]
+    fn a_configured_mode_joins_the_usable_set() {
+        let mut config = Config::default();
+        config.schedules.push(ScheduleEntry {
+            time: "08:00".into(),
+            tags: vec!["morning".into()],
+        });
+
+        let modes = config.available_modes();
+
+        assert!(
+            modes.contains(&DisplayMode::Schedule),
+            "one schedule is all schedule mode ever needed"
+        );
+        assert!(
+            !modes.contains(&DisplayMode::Workspace),
+            "workspaces are still empty, so workspace mode is still inert"
+        );
+    }
+
+    #[test]
+    fn the_rotation_modes_need_no_config_to_run() {
+        let config = Config::default();
+        for mode in [
+            DisplayMode::Static,
+            DisplayMode::Random,
+            DisplayMode::RandomStartup,
+            DisplayMode::Sequential,
+        ] {
+            assert_eq!(
+                config.mode_unavailable_reason(mode),
+                None,
+                "{mode} has no config precondition"
+            );
+        }
+    }
 
     #[test]
     fn test_default_config() {

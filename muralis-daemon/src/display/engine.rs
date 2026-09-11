@@ -1,15 +1,15 @@
 use std::path::Path;
 use std::time::Duration;
 
-use tokio::sync::mpsc;
+use tokio::sync::{broadcast, mpsc};
 use tokio::time::{interval, Instant, MissedTickBehavior};
 use tracing::{info, warn};
 
-use muralis_core::backend::WallpaperBackend;
+use muralis_core::backend::{wait_until_ready, ReadinessPolicy, WallpaperBackend};
 use muralis_core::cache;
 use muralis_core::config::Config;
 use muralis_core::db::Database;
-use muralis_core::ipc::DaemonStatus;
+use muralis_core::ipc::{DaemonEvent, DaemonStatus, FavoritesPage};
 use muralis_core::models::{DisplayMode, Wallpaper};
 use muralis_core::paths::MuralisPaths;
 
@@ -23,13 +23,24 @@ pub struct DisplayEngine {
     mode: DisplayMode,
     paused: bool,
     current_index: usize,
-    current_wallpaper: Option<String>,
+    /// What is actually on screen — the whole row, not just its id, so a
+    /// subscriber's snapshot can answer with a `file_path` without going back
+    /// to the database. Only `set_current` writes it.
+    current: Option<Wallpaper>,
     wallpapers: Vec<Wallpaper>,
     next_change: Option<Instant>,
+    last_error: Option<String>,
+    readiness: ReadinessPolicy,
+    events: broadcast::Sender<DaemonEvent>,
 }
 
 impl DisplayEngine {
-    pub fn new(config: Config, paths: MuralisPaths, backend: Box<dyn WallpaperBackend>) -> Self {
+    pub fn new(
+        config: Config,
+        paths: MuralisPaths,
+        backend: Box<dyn WallpaperBackend>,
+        events: broadcast::Sender<DaemonEvent>,
+    ) -> Self {
         let mode = config.display.mode;
         Self {
             config,
@@ -38,10 +49,50 @@ impl DisplayEngine {
             mode,
             paused: false,
             current_index: 0,
-            current_wallpaper: None,
+            current: None,
             wallpapers: Vec::new(),
             next_change: None,
+            last_error: None,
+            readiness: ReadinessPolicy::default(),
+            events,
         }
+    }
+
+    /// The one place `current` is written. Three call sites used to assign it
+    /// independently — a timed rotation, a `SetWallpaper`, a workspace switch —
+    /// and only two of them cleared `last_error`. Routing them all through here
+    /// means "what is on screen" has a single definition, and every way of
+    /// changing it reaches subscribers.
+    fn set_current(&mut self, wp: &Wallpaper) {
+        self.current = Some(wp.clone());
+        self.last_error = None;
+        self.emit(DaemonEvent::WallpaperChanged {
+            wallpaper: Box::new(wp.clone()),
+        });
+    }
+
+    /// Push one event to every open subscription. `send` never blocks and
+    /// fails only when nobody is subscribed — the common case, and not an
+    /// error. A subscriber too slow to keep up has events dropped on its
+    /// behalf and is resynced from a snapshot; it cannot stall the engine.
+    fn emit(&self, event: DaemonEvent) {
+        let _ = self.events.send(event);
+    }
+
+    /// Current state as the events that would have produced it, for a
+    /// subscriber that just connected.
+    fn snapshot(&self) -> Vec<DaemonEvent> {
+        let mut events = Vec::with_capacity(3);
+        if let Some(wp) = &self.current {
+            events.push(DaemonEvent::WallpaperChanged {
+                wallpaper: Box::new(wp.clone()),
+            });
+        }
+        events.push(DaemonEvent::ModeChanged { mode: self.mode });
+        events.push(DaemonEvent::PauseChanged {
+            paused: self.paused,
+        });
+        events
     }
 
     pub async fn run(
@@ -53,7 +104,7 @@ impl DisplayEngine {
 
         // RandomStartup: pick one wallpaper at launch, then behave like Static
         if self.mode == DisplayMode::RandomStartup {
-            self.next().await;
+            self.startup_apply().await;
         }
 
         // initial cache prune
@@ -109,20 +160,28 @@ impl DisplayEngine {
                             self.update_next_change(tick_duration);
                             timer.reset();
                         }
+                        DaemonCommand::Snapshot { respond } => {
+                            let _ = respond.send(self.snapshot());
+                        }
+                        DaemonCommand::Favorites { offset, limit, respond } => {
+                            let _ = respond.send(self.favorites(offset, limit));
+                        }
                         DaemonCommand::SetWallpaper { id, respond } => {
                             let result = self.set_wallpaper(&id).await;
                             let _ = respond.send(result.map_err(|e| e.to_string()));
                         }
-                        DaemonCommand::SetMode { mode } => {
-                            info!(mode = %mode, "display mode changed");
-                            self.mode = mode;
+                        DaemonCommand::SetMode { mode, respond } => {
+                            let result = self.set_mode(mode);
+                            let _ = respond.send(result);
                         }
                         DaemonCommand::Pause => {
                             self.paused = true;
+                            self.emit(DaemonEvent::PauseChanged { paused: true });
                             info!("rotation paused");
                         }
                         DaemonCommand::Resume => {
                             self.paused = false;
+                            self.emit(DaemonEvent::PauseChanged { paused: false });
                             self.update_next_change(tick_duration);
                             timer.reset();
                             info!("rotation resumed");
@@ -147,6 +206,28 @@ impl DisplayEngine {
                 }
             }
         }
+    }
+
+    /// The one-shot `random_startup` apply, gated on the backend's own daemon
+    /// being up. The compositor typically launches muralis and the backend
+    /// together with no sequencing, and this apply is the only one of the
+    /// session — firing it into a socket that is not bound yet means no
+    /// wallpaper until the next login.
+    async fn startup_apply(&mut self) {
+        // Nothing to apply means nothing to wait for — an empty library must
+        // not hold the daemon's startup hostage to an absent backend.
+        if self.wallpapers.is_empty() {
+            return;
+        }
+
+        if let Err(e) = wait_until_ready(self.backend.as_ref(), &self.readiness).await {
+            warn!(backend = self.backend.name(), "backend not ready: {e}");
+            self.last_error = Some(format!("backend not ready: {e}"));
+        }
+
+        // Attempt regardless: the probe is a best-effort gate, not a veto, and
+        // apply_current records its own failure.
+        self.next().await;
     }
 
     fn reload_wallpapers(&mut self) {
@@ -202,18 +283,75 @@ impl DisplayEngine {
             if path.exists() {
                 match self.backend.set_wallpaper_all(path).await {
                     Ok(()) => {
-                        self.current_wallpaper = Some(wp.id.clone());
+                        let wp = wp.clone();
+                        self.set_current(&wp);
                         if let Ok(db) = Database::open(&self.paths.db_path()) {
                             let _ = db.mark_used(&wp.id);
                         }
                         info!(id = %wp.id, "wallpaper set");
                     }
-                    Err(e) => warn!("failed to set wallpaper: {e}"),
+                    // No retry here: a mid-session failure is followed by a tick
+                    // or a user command soon enough. It is recorded rather than
+                    // only logged, so a Consumer can say the wallpaper on screen
+                    // is not the one muralis thinks it set.
+                    Err(e) => {
+                        warn!("failed to set wallpaper: {e}");
+                        self.last_error = Some(e.to_string());
+                    }
                 }
             } else {
                 warn!(path = %path.display(), "wallpaper file missing");
+                self.last_error = Some(format!("wallpaper file missing: {}", path.display()));
             }
         }
+    }
+
+    /// Switch the display mode, refusing one whose config precondition is
+    /// missing. `schedule` with no schedules and `workspace` with no workspaces
+    /// have handlers that no-op forever: reporting success there means the
+    /// wallpaper silently stops changing with nothing to connect it to.
+    ///
+    /// The choice is written through to `config.toml` before it takes effect,
+    /// so the running mode and the one the next daemon boots into cannot
+    /// disagree — a failed write is reported rather than leaving a mode that
+    /// works now and reverts at reboot. Pause and resume stay ephemeral on
+    /// purpose; see `Config::persist_mode`.
+    fn set_mode(&mut self, mode: DisplayMode) -> Result<(), String> {
+        if let Some(reason) = self.config.mode_unavailable_reason(mode) {
+            warn!(mode = %mode, reason, "refused a mode that cannot run");
+            return Err(reason.to_string());
+        }
+
+        if let Err(e) = self.config.persist_mode(&self.paths, mode) {
+            warn!(mode = %mode, "failed to persist display mode: {e}");
+            return Err(format!("could not save mode: {e}"));
+        }
+
+        info!(mode = %mode, "display mode changed");
+        self.mode = mode;
+        self.emit(DaemonEvent::ModeChanged { mode });
+        Ok(())
+    }
+
+    /// One window onto the **Library**, read from the store rather than the
+    /// engine's rotation cache: `favorites add` writes the DB directly, so a
+    /// Consumer asking right after favoriting would otherwise miss its own
+    /// wallpaper until the next reload.
+    fn favorites(&self, offset: Option<u32>, limit: Option<u32>) -> Result<FavoritesPage, String> {
+        let db = Database::open(&self.paths.db_path()).map_err(|e| e.to_string())?;
+        let all = db.list_wallpapers().map_err(|e| e.to_string())?;
+        let total = all.len() as u32;
+        let offset = offset.unwrap_or(0);
+        let wallpapers = all
+            .into_iter()
+            .skip(offset as usize)
+            .take(limit.map_or(usize::MAX, |l| l as usize))
+            .collect();
+        Ok(FavoritesPage {
+            wallpapers,
+            total,
+            offset,
+        })
     }
 
     async fn set_wallpaper(&mut self, id: &str) -> muralis_core::error::Result<()> {
@@ -232,7 +370,7 @@ impl DisplayEngine {
             Some(wp) => {
                 let path = Path::new(&wp.file_path);
                 self.backend.set_wallpaper_all(path).await?;
-                self.current_wallpaper = Some(wp.id.clone());
+                self.set_current(&wp);
                 if let Ok(db) = Database::open(&self.paths.db_path()) {
                     let _ = db.mark_used(&wp.id);
                 }
@@ -270,10 +408,14 @@ impl DisplayEngine {
                 if path.exists() {
                     match self.backend.set_wallpaper_all(path).await {
                         Ok(()) => {
-                            self.current_wallpaper = Some(wp.id.clone());
+                            let wp = wp.clone();
+                            self.set_current(&wp);
                             info!(workspace = workspace_id, id = %wp.id, "workspace wallpaper set");
                         }
-                        Err(e) => warn!("failed to set workspace wallpaper: {e}"),
+                        Err(e) => {
+                            warn!("failed to set workspace wallpaper: {e}");
+                            self.last_error = Some(e.to_string());
+                        }
                     }
                 }
             } else {
@@ -318,12 +460,14 @@ impl DisplayEngine {
             running: true,
             mode: self.mode,
             paused: self.paused,
-            current_wallpaper: self.current_wallpaper.clone(),
+            current_wallpaper: self.current.as_ref().map(|w| w.id.clone()),
             wallpaper_count: self.wallpapers.len() as u32,
             next_change: self.next_change.map(|t| {
                 let remaining = t.saturating_duration_since(Instant::now());
                 format!("{}s", remaining.as_secs())
             }),
+            last_error: self.last_error.clone(),
+            available_modes: self.config.available_modes(),
         }
     }
 
@@ -333,5 +477,527 @@ impl DisplayEngine {
         } else {
             self.next_change = None;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use async_trait::async_trait;
+    use muralis_core::backend::ReadinessPolicy;
+    use muralis_core::config::ScheduleEntry;
+    use muralis_core::error::{MuralisError, Result};
+    use muralis_core::models::SourceType;
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    /// Backend that reports ready from the `ready_at`-th probe onward
+    /// (`0` = never) and only then accepts a wallpaper, like awww-daemon.
+    struct FakeBackend {
+        ready_at: u32,
+        probes: AtomicU32,
+    }
+
+    impl FakeBackend {
+        fn ready_at(ready_at: u32) -> Self {
+            Self {
+                ready_at,
+                probes: AtomicU32::new(0),
+            }
+        }
+
+        /// Up from the first request, for tests about what an apply does
+        /// rather than about waiting for one.
+        fn ready_now() -> Self {
+            Self {
+                ready_at: 1,
+                probes: AtomicU32::new(1),
+            }
+        }
+
+        fn is_up(&self) -> bool {
+            self.ready_at != 0 && self.probes.load(Ordering::SeqCst) >= self.ready_at
+        }
+    }
+
+    #[async_trait]
+    impl WallpaperBackend for FakeBackend {
+        async fn set_wallpaper(&self, _path: &Path, _monitor: &str) -> Result<()> {
+            self.set_wallpaper_all(_path).await
+        }
+
+        async fn set_wallpaper_all(&self, _path: &Path) -> Result<()> {
+            if self.is_up() {
+                Ok(())
+            } else {
+                Err(MuralisError::Backend("socket not bound".into()))
+            }
+        }
+
+        async fn is_ready(&self) -> Result<()> {
+            self.probes.fetch_add(1, Ordering::SeqCst);
+            if self.is_up() {
+                Ok(())
+            } else {
+                Err(MuralisError::Backend("socket not bound".into()))
+            }
+        }
+
+        fn name(&self) -> &str {
+            "fake"
+        }
+    }
+
+    /// Every event the engine has emitted so far, drained without blocking.
+    fn drained(rx: &mut broadcast::Receiver<DaemonEvent>) -> Vec<DaemonEvent> {
+        let mut events = Vec::new();
+        while let Ok(event) = rx.try_recv() {
+            events.push(event);
+        }
+        events
+    }
+
+    /// The ids of the wallpapers a run of events says reached the screen.
+    fn changed_ids(events: &[DaemonEvent]) -> Vec<String> {
+        events
+            .iter()
+            .filter_map(|e| match e {
+                DaemonEvent::WallpaperChanged { wallpaper } => Some(wallpaper.id.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// An engine over a throwaway XDG root, holding one wallpaper that exists
+    /// on disk. Probing is instant so tests assert behaviour, not timing.
+    fn engine_with(backend: FakeBackend) -> (DisplayEngine, tempfile::TempDir) {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = MuralisPaths {
+            config_dir: tmp.path().join("config"),
+            data_dir: tmp.path().join("data"),
+            cache_dir: tmp.path().join("cache"),
+        };
+        paths.ensure_dirs().unwrap();
+
+        let file = paths.wallpapers_dir().join("wp1.jpg");
+        std::fs::write(&file, b"not really a jpeg").unwrap();
+
+        let (events, _) = broadcast::channel(64);
+        let mut engine = DisplayEngine::new(Config::default(), paths, Box::new(backend), events);
+        engine.readiness = ReadinessPolicy {
+            attempts: 5,
+            initial_delay: Duration::ZERO,
+            max_delay: Duration::ZERO,
+        };
+        engine.wallpapers = vec![Wallpaper {
+            id: "wp1".into(),
+            source_type: SourceType::new("test"),
+            source_id: "wp1".into(),
+            source_url: None,
+            width: 5120,
+            height: 1440,
+            tags: Vec::new(),
+            file_path: file.to_string_lossy().into_owned(),
+            added_at: "2026-09-10T00:00:00Z".into(),
+            last_used: None,
+            use_count: 0,
+        }];
+
+        (engine, tmp)
+    }
+
+    /// Rows in the engine's own store, `added_at` descending like the DB
+    /// orders them, so `wp0` is newest.
+    fn seed_library(engine: &DisplayEngine, count: u32) {
+        let db = Database::open(&engine.paths.db_path()).unwrap();
+        for i in 0..count {
+            db.insert_wallpaper(&Wallpaper {
+                id: format!("wp{i}"),
+                source_type: SourceType::new("test"),
+                source_id: format!("wp{i}"),
+                source_url: None,
+                width: 5120,
+                height: 1440,
+                tags: Vec::new(),
+                file_path: format!("/tmp/wp{i}.jpg"),
+                added_at: format!("2026-09-{:02}T00:00:00Z", 30 - i),
+                last_used: None,
+                use_count: 0,
+            })
+            .unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn favorites_serves_the_library_from_the_store_not_a_stale_cache() {
+        let (engine, _tmp) = engine_with(FakeBackend::ready_at(1));
+        // `favorites add` writes the DB behind the daemon's back; a Consumer
+        // that just favorited must see it without a reload.
+        seed_library(&engine, 3);
+
+        let page = engine.favorites(None, None).unwrap();
+
+        assert_eq!(page.total, 3);
+        assert_eq!(page.offset, 0);
+        assert_eq!(
+            page.wallpapers
+                .iter()
+                .map(|w| w.id.as_str())
+                .collect::<Vec<_>>(),
+            ["wp0", "wp1", "wp2"],
+            "the whole Library, newest first"
+        );
+    }
+
+    #[tokio::test]
+    async fn favorites_windows_the_library_for_a_paging_consumer() {
+        let (engine, _tmp) = engine_with(FakeBackend::ready_at(1));
+        seed_library(&engine, 5);
+
+        let page = engine.favorites(Some(2), Some(2)).unwrap();
+
+        assert_eq!(
+            page.wallpapers
+                .iter()
+                .map(|w| w.id.as_str())
+                .collect::<Vec<_>>(),
+            ["wp2", "wp3"],
+            "the window starts at the offset and is no longer than the limit"
+        );
+        assert_eq!(page.offset, 2, "the window says where it sits");
+        assert_eq!(
+            page.total, 5,
+            "total counts the whole Library, not the page"
+        );
+    }
+
+    #[tokio::test]
+    async fn favorites_past_the_end_is_an_empty_page_not_an_error() {
+        let (engine, _tmp) = engine_with(FakeBackend::ready_at(1));
+        seed_library(&engine, 3);
+
+        let page = engine.favorites(Some(10), Some(16)).unwrap();
+
+        assert!(page.wallpapers.is_empty());
+        assert_eq!(
+            page.total, 3,
+            "a Consumer scrolling past the end still learns the size"
+        );
+    }
+
+    #[tokio::test]
+    async fn set_mode_refuses_a_mode_that_cannot_possibly_run() {
+        let (mut engine, _tmp) = engine_with(FakeBackend::ready_at(1));
+        let before = engine.mode;
+
+        let result = engine.set_mode(DisplayMode::Schedule);
+
+        assert_eq!(
+            result.err().as_deref(),
+            Some("no schedules configured"),
+            "an empty schedule list makes schedule mode inert, so the change must fail loudly"
+        );
+        assert_eq!(engine.mode, before, "the previous mode stays in effect");
+    }
+
+    #[tokio::test]
+    async fn set_mode_refuses_workspace_without_workspaces() {
+        let (mut engine, _tmp) = engine_with(FakeBackend::ready_at(1));
+
+        let result = engine.set_mode(DisplayMode::Workspace);
+
+        assert_eq!(result.err().as_deref(), Some("no workspaces configured"));
+        assert_ne!(engine.mode, DisplayMode::Workspace);
+    }
+
+    #[tokio::test]
+    async fn set_mode_accepts_a_configured_mode() {
+        let (mut engine, _tmp) = engine_with(FakeBackend::ready_at(1));
+        engine.config.schedules.push(ScheduleEntry {
+            time: "08:00".into(),
+            tags: vec!["morning".into()],
+        });
+
+        assert!(engine.set_mode(DisplayMode::Schedule).is_ok());
+        assert_eq!(engine.mode, DisplayMode::Schedule);
+    }
+
+    #[tokio::test]
+    async fn set_mode_accepts_a_mode_with_no_precondition() {
+        let (mut engine, _tmp) = engine_with(FakeBackend::ready_at(1));
+
+        assert!(engine.set_mode(DisplayMode::Sequential).is_ok());
+        assert_eq!(engine.mode, DisplayMode::Sequential);
+    }
+
+    #[tokio::test]
+    async fn status_offers_only_the_modes_this_config_can_run() {
+        let (mut engine, _tmp) = engine_with(FakeBackend::ready_at(1));
+        engine.config.schedules.push(ScheduleEntry {
+            time: "08:00".into(),
+            tags: vec!["morning".into()],
+        });
+
+        let status = engine.status();
+
+        assert!(
+            status.available_modes.contains(&DisplayMode::Schedule),
+            "a schedule is configured, so schedule mode is on offer"
+        );
+        assert!(
+            !status.available_modes.contains(&DisplayMode::Workspace),
+            "workspace mode would no-op forever here; a Consumer must be able to tell"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_chosen_mode_outlives_the_daemon_that_was_told_about_it() {
+        let (mut engine, _tmp) = engine_with(FakeBackend::ready_at(1));
+
+        engine.set_mode(DisplayMode::Sequential).unwrap();
+
+        assert_eq!(
+            Config::load(&engine.paths).unwrap().display.mode,
+            DisplayMode::Sequential,
+            "the next daemon reads config.toml, so an unwritten mode change is a lost one"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_refused_mode_is_never_written_to_the_config() {
+        let (mut engine, _tmp) = engine_with(FakeBackend::ready_at(1));
+        let original = "[display]\nmode = \"random\"\n";
+        std::fs::write(engine.paths.config_file(), original).unwrap();
+
+        assert!(engine.set_mode(DisplayMode::Schedule).is_err());
+
+        assert_eq!(
+            std::fs::read_to_string(engine.paths.config_file()).unwrap(),
+            original,
+            "a mode the daemon refuses must not be the one it boots into"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_config_that_cannot_be_written_leaves_the_mode_where_it_was() {
+        let (mut engine, _tmp) = engine_with(FakeBackend::ready_at(1));
+        // A directory where the file belongs: writable path, unwritable file.
+        std::fs::create_dir_all(engine.paths.config_file()).unwrap();
+        let before = engine.mode;
+
+        let result = engine.set_mode(DisplayMode::Sequential);
+
+        assert!(
+            result.is_err(),
+            "a mode we cannot persist is one we do not claim"
+        );
+        assert_eq!(
+            engine.mode, before,
+            "reporting success for a change that reverts at reboot is the bug being fixed"
+        );
+    }
+
+    #[tokio::test]
+    async fn failed_apply_is_visible_in_status() {
+        let (mut engine, _tmp) = engine_with(FakeBackend::ready_at(0));
+
+        engine.apply_current().await;
+
+        let status = engine.status();
+        assert!(
+            status.current_wallpaper.is_none(),
+            "nothing was applied, so nothing is current"
+        );
+        assert!(
+            status
+                .last_error
+                .as_deref()
+                .is_some_and(|e| e.contains("socket not bound")),
+            "the backend failure should reach status, got: {:?}",
+            status.last_error
+        );
+    }
+
+    #[tokio::test]
+    async fn startup_waits_for_a_backend_that_is_still_coming_up() {
+        let (mut engine, _tmp) = engine_with(FakeBackend::ready_at(3));
+        engine.mode = DisplayMode::RandomStartup;
+
+        engine.startup_apply().await;
+
+        let status = engine.status();
+        assert_eq!(
+            status.current_wallpaper.as_deref(),
+            Some("wp1"),
+            "the startup apply must survive losing the race with the backend daemon"
+        );
+        assert!(status.last_error.is_none());
+    }
+
+    #[tokio::test]
+    async fn startup_against_an_absent_backend_says_so_instead_of_going_quiet() {
+        let (mut engine, _tmp) = engine_with(FakeBackend::ready_at(0));
+        engine.mode = DisplayMode::RandomStartup;
+
+        engine.startup_apply().await;
+
+        let status = engine.status();
+        assert!(status.current_wallpaper.is_none());
+        assert!(
+            status.last_error.is_some(),
+            "a lost startup must be reportable, not only a warn! nobody reads"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_empty_library_does_not_wait_on_the_backend() {
+        let (mut engine, _tmp) = engine_with(FakeBackend::ready_at(0));
+        engine.mode = DisplayMode::RandomStartup;
+        engine.wallpapers.clear();
+
+        engine.startup_apply().await;
+
+        assert!(
+            engine.status().last_error.is_none(),
+            "with nothing to apply there is nothing to wait for, and no failure to report"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_failed_workspace_switch_is_reported_like_any_other() {
+        let (mut engine, _tmp) = engine_with(FakeBackend::ready_at(0));
+        engine.mode = DisplayMode::Workspace;
+        engine.config.workspaces = vec![muralis_core::config::WorkspaceConfig {
+            workspace: 1,
+            wallpaper: "wp1".into(),
+        }];
+
+        engine.handle_workspace_change(1).await;
+
+        assert!(engine.status().current_wallpaper.is_none());
+        assert!(engine.status().last_error.is_some());
+    }
+
+    #[tokio::test]
+    async fn a_later_success_clears_the_recorded_failure() {
+        let backend = FakeBackend::ready_at(2);
+        let (mut engine, _tmp) = engine_with(backend);
+
+        // first apply happens before any probe, so the backend is still down
+        engine.apply_current().await;
+        assert!(engine.status().last_error.is_some());
+
+        engine.startup_apply().await;
+
+        let status = engine.status();
+        assert_eq!(status.current_wallpaper.as_deref(), Some("wp1"));
+        assert!(
+            status.last_error.is_none(),
+            "a stale failure must not outlive the wallpaper that fixed it"
+        );
+    }
+
+    #[tokio::test]
+    async fn every_way_the_wallpaper_changes_reaches_a_subscriber() {
+        // The three assignment sites — a rotation, an explicit pick, a
+        // workspace switch — used to write `current` independently. A
+        // subscriber that only hears about one of them is the bug.
+        let (mut engine, _tmp) = engine_with(FakeBackend::ready_now());
+        engine.config.workspaces = vec![muralis_core::config::WorkspaceConfig {
+            workspace: 1,
+            wallpaper: "wp1".into(),
+        }];
+        let mut rx = engine.events.subscribe();
+
+        engine.apply_current().await;
+        engine.set_wallpaper("wp1").await.unwrap();
+        engine.mode = DisplayMode::Workspace;
+        engine.handle_workspace_change(1).await;
+
+        assert_eq!(
+            changed_ids(&drained(&mut rx)),
+            ["wp1", "wp1", "wp1"],
+            "a rotation, a SetWallpaper and a workspace switch must each push"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_failed_apply_tells_nobody_the_wallpaper_changed() {
+        // A Consumer regenerates its whole palette from the image it is told
+        // about; announcing one that never reached the screen is worse than
+        // announcing nothing.
+        let (mut engine, _tmp) = engine_with(FakeBackend::ready_at(0));
+        let mut rx = engine.events.subscribe();
+
+        engine.apply_current().await;
+
+        assert!(drained(&mut rx).is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_successful_pick_clears_a_recorded_failure() {
+        // `set_wallpaper` used to assign `current` without clearing
+        // `last_error`, so a Consumer kept showing a failure the next
+        // successful pick had already fixed.
+        let backend = FakeBackend::ready_at(2);
+        let (mut engine, _tmp) = engine_with(backend);
+        engine.apply_current().await;
+        assert!(engine.status().last_error.is_some());
+
+        engine.backend.is_ready().await.ok();
+        engine.backend.is_ready().await.ok();
+        engine.set_wallpaper("wp1").await.unwrap();
+
+        assert!(engine.status().last_error.is_none());
+    }
+
+    #[tokio::test]
+    async fn a_new_subscriber_is_told_what_is_already_on_screen() {
+        let (mut engine, _tmp) = engine_with(FakeBackend::ready_now());
+        engine.apply_current().await;
+
+        let snapshot = engine.snapshot();
+
+        assert_eq!(
+            changed_ids(&snapshot),
+            ["wp1"],
+            "a Consumer connecting mid-session must not wait for the next rotation"
+        );
+        assert!(snapshot
+            .iter()
+            .any(|e| matches!(e, DaemonEvent::ModeChanged { .. })));
+        assert!(snapshot
+            .iter()
+            .any(|e| matches!(e, DaemonEvent::PauseChanged { paused: false })));
+    }
+
+    #[tokio::test]
+    async fn a_snapshot_with_nothing_applied_says_so_by_omission() {
+        let (engine, _tmp) = engine_with(FakeBackend::ready_at(1));
+
+        let snapshot = engine.snapshot();
+
+        assert!(
+            changed_ids(&snapshot).is_empty(),
+            "nothing has been applied, so there is no wallpaper to announce"
+        );
+        assert_eq!(snapshot.len(), 2, "mode and pause state still come through");
+    }
+
+    #[tokio::test]
+    async fn a_mode_change_is_pushed_but_a_refused_one_is_not() {
+        let (mut engine, _tmp) = engine_with(FakeBackend::ready_at(1));
+        let mut rx = engine.events.subscribe();
+
+        engine.set_mode(DisplayMode::Sequential).unwrap();
+        assert!(engine.set_mode(DisplayMode::Workspace).is_err());
+
+        let events = drained(&mut rx);
+        assert_eq!(events.len(), 1, "only the change that took effect is news");
+        assert!(matches!(
+            events[0],
+            DaemonEvent::ModeChanged {
+                mode: DisplayMode::Sequential
+            }
+        ));
     }
 }

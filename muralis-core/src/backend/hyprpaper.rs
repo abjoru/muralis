@@ -67,6 +67,14 @@ impl WallpaperBackend for HyprpaperBackend {
         Ok(())
     }
 
+    /// `hyprctl hyprpaper listactive` exits non-zero until hyprpaper is up
+    /// ("failed to connect to hyprpaper").
+    async fn is_ready(&self) -> Result<()> {
+        Self::hyprctl(&["hyprpaper", "listactive"])
+            .await
+            .map(|_| ())
+    }
+
     fn name(&self) -> &str {
         "hyprpaper"
     }

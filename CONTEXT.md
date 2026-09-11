@@ -56,8 +56,24 @@ The policy is an **ordered level** — `safe` < `moderate` < `nsfw` — acting a
 ### Search & paging
 
 **Preview**:
-A transient search result (`WallpaperPreview`) — not yet favorited, not on disk.
+A transient search result (`WallpaperPreview`) — not in the **Library**, not on
+disk.
 _Avoid_: result, thumbnail, image
+
+**Wallpaper**:
+A **Preview** that has been kept: downloaded to disk and recorded as a row in
+`wallpapers`. The persisted counterpart to a Preview, carrying usage history
+(`last_used`, `use_count`) a Preview has no place for.
+_Avoid_: favorite (see **Library**), image, file
+
+**Library**:
+Every **Wallpaper** on disk — the set the daemon rotates through and a
+**Consumer** displays. There is no curated subset within it: the schema has no
+favorite flag, so being in the Library *is* being kept, and `muralis favorites
+list` returns the whole thing. The CLI spelling is historical and stays (it is
+part of the **CLI contract**); our own prose says Library, so nothing implies a
+filter that does not exist.
+_Avoid_: favorites (the command name, not the concept), collection, gallery
 
 **Page-filling**:
 A **RestSource** consuming a fixed block of B upstream API pages for one logical page, applying the aspect filter as it goes, returning up to `per_page` matches. Best-effort *within the block*: a logical page may return fewer than `per_page` even when more matches exist upstream.
@@ -72,6 +88,146 @@ The fixed number of upstream API pages a **RestSource** maps to one logical page
 The transport seam behind **RestSource**, at bytes level: `get(url, headers, query) -> (StatusCode, Bytes)`. Lives in `muralis-source-common`. The real adapter wraps `reqwest`; the test adapter returns canned bytes and asserts the auth header and pagination params. Auth injection and JSON parsing live in **RestSource**, not behind this seam.
 _Avoid_: HttpClient, Transport, Fetcher
 
+### Display
+
+**Backend**:
+The thing that puts a **Wallpaper** on screen, implementing `WallpaperBackend`
+(`set_wallpaper`, `set_wallpaper_all`, `is_ready`). Each one drives a separate
+long-running process of its own — awww-daemon, hyprpaper — which muralis does
+not start and cannot assume is up.
+_Avoid_: renderer, compositor (that is Hyprland), swww (that is one backend's
+binary, and it is now named awww)
+
+**Readiness probe**:
+A **Backend** answering whether its process is accepting requests yet
+(`awww query`, `hyprctl hyprpaper listactive`). Exists because the compositor
+launches muralis and the backend together with no sequencing: the `random_startup`
+apply is the only one of the session, so firing it into an unbound socket costs
+the whole session's wallpaper. The daemon probes with bounded backoff
+(`ReadinessPolicy`) before that apply, and only then.
+_Avoid_: health check (it gates one apply, it does not monitor)
+
+**last_error**:
+The `DaemonStatus` field carrying why the last apply failed, cleared by the next
+success. A backend failure used to be a `warn!` on a stderr nobody captures; this
+is the same fact on the **IPC contract**, so a **Consumer** can show a wrong
+screen as wrong.
+
+**Current wallpaper**:
+What is actually on screen, held by the daemon as the whole `Wallpaper` row
+rather than its id. One function writes it (`DisplayEngine::set_current`), and
+writing it is what clears **last_error** and emits a **Daemon event** — so a
+timed rotation, a `SetWallpaper` and a workspace switch cannot disagree about
+what "current" means or about who gets told. It had three independent
+assignment sites before, and only two of them cleared the error.
+_Avoid_: current_index (that is the rotation cursor, not what is displayed)
+
+**Mode viability**:
+Whether a display mode (`DisplayMode`) has the config it needs to do anything —
+`schedule` needs at least one entry in `schedules`, `workspace` at least one in
+`workspaces`; the four rotation modes need nothing. One predicate
+(`Config::mode_unavailable_reason`) answers it, returning the reason a mode
+cannot run. `SetMode` refuses on a reason instead of accepting a mode whose
+handler would no-op forever, and the usable set a **Consumer** reads off
+`status` (`DaemonStatus::available_modes`, built by `Config::available_modes`
+as the modes answering `None`) is derived from the same call — encoding the
+rule twice is how the refusal and the offer drift apart. The reason itself
+stays on the refusal; `status` carries the set, not the prose.
+_Avoid_: valid mode (a mode is well-formed either way; it is the config that is
+missing), enabled
+
+**Mode write-through**:
+A `SetMode` landing in `config.toml` before it takes effect
+(`Config::persist_mode`), so the running mode and the one the next daemon boots
+into cannot disagree. The edit is surgical — only the `mode` value moves, and the
+comments and spacing of a hand-written config survive — and a file that will not
+parse is refused rather than overwritten. A write that fails fails the command:
+a mode that works now and silently reverts at reboot is the thing being avoided.
+Pause is deliberately *not* written through; pausing rotation reads as temporary
+in a way that choosing a mode does not.
+_Avoid_: save (`Config::save` reserialized the whole file and took the comments
+with it; it is gone), autosave, sync
+
+### Consumers
+
+**DMS Widget**:
+The DankBar surface (in `dms-widget/`) that drives muralis from
+DankMaterialShell — a **Consumer**, not a **Source**. It adds no wallpapers; it
+reads favorites and drives rotation through the CLI. DMS's own vocabulary calls
+this a *plugin* (`plugin.json`, `dms plugins install`); inside this repo that
+word stays reserved for a source crate, so the directory and all our prose say
+*widget*.
+_Avoid_: DMS plugin, wallpaper tab (it replaced one; it is not one)
+
+**Consumer**:
+Anything outside the workspace that drives muralis through the **IPC contract**
+rather than linking `muralis-core`. The **DMS Widget** is the first. A Consumer
+is a client of the contract and never a **Source**. Consumers are not the
+audience for the **CLI contract** — that seam serves scripts, keybinds and
+humans.
+
+**IPC contract**:
+The daemon socket protocol a **Consumer** depends on: the `IpcRequest` /
+`IpcResponse` variants and the **Daemon events** a subscriber holds open. Being
+a contract is what distinguishes it from the daemon's internals — variant names
+and response field names are a compatibility promise, not free to churn. It
+carries two shapes: request/response, and a **Subscription** the Consumer keeps
+open and reconnects to.
+_Avoid_: API (reserve for a remote **Source**'s HTTP API)
+
+**Subscription**:
+A **Consumer**'s `Subscribe` connection, held open while the daemon writes
+**Daemon events** to it. The one request that gets no `IpcResponse` — the first
+lines back are a **Snapshot**, and everything after is live. It exists because
+the daemon cannot otherwise push: a timed rotation left the DMS Widget's matugen
+palette matching a wallpaper that was no longer on screen, resyncing only when
+the user happened to open the popout.
+_Avoid_: watch, listener, poll (the point is that it is not polling)
+
+**Daemon event**:
+One line of a **Subscription**: `{"event": …}`, tagged the way `IpcRequest` is
+tagged `command`, so a Consumer switches on one field. Three kinds:
+`wallpaper_changed` (carrying the whole `Wallpaper` row), `mode_changed`,
+`pause_changed`. An event is self-sufficient by design — `wallpaper_changed`
+holds `file_path` because `SessionData.setWallpaper()` takes a path, and an
+event a Consumer must chase with a `Status` is not a push. Adding a kind is
+backwards-compatible; changing a shipped one is not. `wallpaper_changed` fires
+only on a *successful* apply: a Consumer regenerates a whole palette from what
+it is told, so announcing an image nobody can see is worse than announcing
+nothing.
+_Avoid_: message, notification, signal
+
+**Snapshot**:
+The daemon's current state rendered as the **Daemon events** that would have
+produced it, written first on every **Subscription** and again after a lagging
+subscriber is resynced. Without it a Consumer learns nothing until the next
+rotation, and a reconnect after a `DankSocket` backoff would silently miss
+whatever changed while it was away — which is exactly the defect a subscription
+exists to fix.
+_Avoid_: initial state, replay (nothing is replayed — it is current state, not
+history)
+
+**Favorites request**:
+The **IPC contract**'s read of the **Library**: `Favorites { offset, limit }`,
+answered with a `FavoritesPage` (`wallpapers`, `total`, `offset`). Both bounds
+are optional and a bare `favorites` means the whole Library — the **CLI
+contract**'s shape — while a **Consumer** drawing a grid asks for the window it
+draws. Paging is on the wire because the numbers say so: a **Wallpaper** row is
+~445 B of JSON, so a 1000-wallpaper Library is a ~435 KiB single socket line
+against ~7 KiB for a 16-item page. The daemon reads the database per request
+rather than serving its rotation cache, because `favorites add` writes the store
+behind the daemon's back and a Consumer must see the wallpaper it just kept.
+_Avoid_: library request (the command name is `Favorites`, historical like the
+CLI's), listFavorites
+
+**CLI contract**:
+The subset of `muralis` CLI commands and their JSON output that scripts,
+keybinds and humans depend on. Distinct from the **IPC contract** in audience,
+not just in wire format: the CLI keeps promises the IPC contract does not, such
+as `favorites list` answering from the database with the daemon down. A
+**Consumer** does not use it.
+_Avoid_: API, treating it as the Consumer seam (that is the **IPC contract**)
+
 ## Relationships
 
 - A **RestSource** is built from exactly one **Source Descriptor** and one **HttpFetch** adapter.
@@ -80,6 +236,18 @@ _Avoid_: HttpClient, Transport, Fetcher
 - The `SourceRegistry` holds **Sources** (any mix of **RestSource**, **Booru Source**, **Pixabay Source**, **Feed Source**).
 - `create_sources` takes a **SourceContext** (global cross-cutting knobs: **Content Safety policy**, `min_width`/`min_height`) in addition to the `[sources]` table + client. The contract is the same for every plugin.
 - A gelbooru **Flavor** instance points at any gelbooru-clone host by `base` (gelbooru, rule34, safebooru, realbooru) — multi-host for free.
+- A **Preview** becomes a **Wallpaper** when kept; the **Library** is every Wallpaper. Nothing distinguishes Wallpapers within the Library — there is no favorite flag.
+- A **Consumer** (e.g. the **DMS Widget**) depends only on the **IPC contract**; it never links `muralis-core` and never registers as a **Source**.
+- The **Library** has exactly one backing store behind both seams: the daemon answers the **Favorites request** from the database, and `favorites list` falls back to that same database only when the daemon cannot answer.
+- Every **Daemon event** originates inside the daemon: a **Current wallpaper**
+  write, a `SetMode` that took effect, or a pause toggle. A **Consumer** never
+  emits one.
+- A **Subscription** begins with a **Snapshot**, so a Consumer's state is a
+  function of the connection alone — it never needs a `Status` round-trip to
+  become current.
+- A **Mode write-through** precedes the mode taking effect, so a refused or
+  unwritable config leaves the daemon on the mode it already had.
+- **Mode viability** is read from the `Config` alone — never from the daemon's running state — so `SetMode` and `status` cannot disagree about which modes are usable.
 
 ## Example dialogue
 

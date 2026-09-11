@@ -64,6 +64,24 @@ impl WallpaperBackend for SwwwBackend {
         Ok(())
     }
 
+    /// `awww query` fails until awww-daemon has bound its socket.
+    async fn is_ready(&self) -> Result<()> {
+        let output = Command::new("awww")
+            .arg("query")
+            .output()
+            .await
+            .map_err(|e| MuralisError::Backend(format!("failed to run awww: {e}")))?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(MuralisError::Backend(format!(
+                "awww-daemon not ready: {}",
+                stderr.trim()
+            )));
+        }
+        Ok(())
+    }
+
     fn name(&self) -> &str {
         "awww"
     }

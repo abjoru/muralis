@@ -4,8 +4,8 @@ use serde::Serialize;
 
 use muralis_core::config::Config;
 use muralis_core::db::Database;
-use muralis_core::ipc::{self, IpcRequest, IpcResponse};
-use muralis_core::models::DisplayMode;
+use muralis_core::ipc::{self, FavoritesPage, IpcRequest, IpcResponse};
+use muralis_core::models::{DisplayMode, Wallpaper};
 use muralis_core::paths::MuralisPaths;
 use muralis_core::sources::{AspectRatioFilter, SourceContext, SourceRegistry, WallpaperSource};
 use muralis_core::wallpapers::WallpaperManager;
@@ -275,9 +275,21 @@ async fn main() -> Result<()> {
         }
         Commands::Favorites { action } => match action {
             FavoritesAction::List => {
-                let paths = MuralisPaths::new()?;
-                let db = Database::open(&paths.db_path())?;
-                let wallpapers = db.list_wallpapers()?;
+                // Ask the daemon first — one backing store, one answer — and
+                // read the database ourselves when it cannot answer.
+                let served = ipc::send_request(&IpcRequest::Favorites {
+                    offset: None,
+                    limit: None,
+                })
+                .await;
+                let wallpapers = match library_from_daemon(served) {
+                    Some(wallpapers) => wallpapers,
+                    None => {
+                        let paths = MuralisPaths::new()?;
+                        let db = Database::open(&paths.db_path())?;
+                        db.list_wallpapers()?
+                    }
+                };
                 println!("{}", serde_json::to_string(&wallpapers)?);
             }
             FavoritesAction::Stats => {
@@ -390,6 +402,23 @@ async fn send(request: IpcRequest) -> Result<IpcResponse> {
         .map_err(|e| anyhow::anyhow!("daemon not running. start with: muralis-daemon\n  ({e})"))
 }
 
+/// The **Library** as the daemon served it, or `None` when it did not — no
+/// socket, an error response, or a payload that will not parse. `None` sends
+/// `favorites list` to the database instead: answering with the daemon down is
+/// a **CLI contract** promise the **IPC contract** deliberately does not make
+/// (ADR 0002), so every way the daemon can fail to answer falls back, not just
+/// a refused connection.
+fn library_from_daemon(
+    response: muralis_core::error::Result<IpcResponse>,
+) -> Option<Vec<Wallpaper>> {
+    match response {
+        Ok(IpcResponse::Ok { data: Some(data) }) => serde_json::from_value::<FavoritesPage>(data)
+            .ok()
+            .map(|page| page.wallpapers),
+        _ => None,
+    }
+}
+
 fn print_response(resp: IpcResponse) {
     match resp {
         IpcResponse::Ok { data: Some(data) } => {
@@ -433,5 +462,64 @@ fn format_bytes(bytes: u64) -> String {
         format!("{:.1} KB", bytes as f64 / KB as f64)
     } else {
         format!("{bytes} B")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use muralis_core::ipc::FavoritesPage;
+    use muralis_core::models::{SourceType, Wallpaper};
+
+    fn wallpaper(id: &str) -> Wallpaper {
+        Wallpaper {
+            id: id.into(),
+            source_type: SourceType::new("test"),
+            source_id: id.into(),
+            source_url: None,
+            width: 5120,
+            height: 1440,
+            tags: Vec::new(),
+            file_path: format!("/tmp/{id}.jpg"),
+            added_at: "2026-09-10T00:00:00Z".into(),
+            last_used: None,
+            use_count: 0,
+        }
+    }
+
+    #[test]
+    fn favorites_list_takes_the_library_from_the_daemon_when_it_answers() {
+        let page = FavoritesPage {
+            wallpapers: vec![wallpaper("wp1")],
+            total: 1,
+            offset: 0,
+        };
+        let resp = IpcResponse::ok_with_data(serde_json::to_value(&page).unwrap());
+
+        let library = library_from_daemon(Ok(resp)).expect("a served page is the answer");
+
+        assert_eq!(library.len(), 1);
+        assert_eq!(library[0].id, "wp1");
+    }
+
+    #[test]
+    fn favorites_list_falls_back_when_the_daemon_is_down() {
+        // The CLI contract promises an answer with no daemon; the IPC contract
+        // does not. `None` is the signal to read the database directly.
+        let down = Err(muralis_core::error::MuralisError::Ipc(
+            "failed to connect to daemon".into(),
+        ));
+
+        assert!(library_from_daemon(down).is_none());
+    }
+
+    #[test]
+    fn favorites_list_falls_back_when_the_daemon_answers_badly() {
+        assert!(library_from_daemon(Ok(IpcResponse::error("engine unavailable"))).is_none());
+        assert!(library_from_daemon(Ok(IpcResponse::ok())).is_none());
+        assert!(
+            library_from_daemon(Ok(IpcResponse::ok_with_data(serde_json::json!("nonsense"))))
+                .is_none()
+        );
     }
 }
