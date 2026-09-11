@@ -130,6 +130,18 @@ The contract has two shapes, so the widget opens two connections:
 what DMS already has. Every redial replays the snapshot, and regenerating a
 palette we already have is pure cost.
 
+## Versioning
+
+`plugin.json`'s `version` tracks muralis's own, exactly. The widget's entire
+contract is the daemon's IPC output, and this directory lives in the muralis
+repo precisely so the two cannot drift — a widget version that walks its own
+path would reintroduce the drift co-location was meant to prevent. "Muralis
+widget 0.3.0 talks to muralis 0.3.0" is a claim anyone can check.
+
+It is not bumped automatically. The release workflow syncs `Cargo.toml`, the
+lockfile and the README badge; this file is not in that list, so a release that
+forgets it ships a manifest claiming the wrong version.
+
 ## Files
 
 | File | Role |

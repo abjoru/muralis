@@ -3,7 +3,7 @@
     "id": "muralis",
     "name": "Muralis",
     "description": "Browse the muralis library and drive wallpaper rotation from the DankBar",
-    "version": "0.1.0",
+    "version": "0.3.0",
     "author": "abjoru",
     "type": "widget",
     "capabilities": [
