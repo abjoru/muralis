@@ -32,7 +32,11 @@ pub use drift::{check_live_category, DriftCheck};
 /// Stable identity for this host, so its filename-shaped `source_id`s cannot
 /// collide with another Source's ids.
 const SOURCE_TYPE: &str = "ultrawide";
-const DISPLAY_NAME: &str = "Ultrawide Wallpapers";
+/// What a user types to select this Source — `muralis browse Ultrawide` — and
+/// what the GUI renders as its chip. One word, like every other built-in, so it
+/// needs no shell quoting; the messages below hand it over unquoted for that
+/// reason. Cosmetic, and deliberately separate from `SOURCE_TYPE` above.
+const DISPLAY_NAME: &str = "Ultrawide";
 
 /// The site, canonical host included — every category page and every master
 /// hangs off it, and `resolve_url` matches against it before parsing an id.
@@ -168,8 +172,8 @@ impl WallpaperSource for UltrawideSource {
         Err(source_error(
             "search",
             format!(
-                "'{DISPLAY_NAME}' is a browsed source with no query dimension; \
-                 use: muralis browse '{DISPLAY_NAME}' --category <slug>"
+                "{DISPLAY_NAME} is a browsed source with no query dimension; \
+                 use: muralis browse {DISPLAY_NAME} --category <slug>"
             ),
         ))
     }
@@ -184,7 +188,7 @@ impl WallpaperSource for UltrawideSource {
         let slug = category.ok_or_else(|| {
             source_error(
                 "browse",
-                format!("'{DISPLAY_NAME}' publishes categories; name one with --category"),
+                format!("{DISPLAY_NAME} publishes categories; name one with --category"),
             )
         })?;
         let url = category_url(slug);
@@ -252,7 +256,7 @@ impl WallpaperSource for UltrawideSource {
         Some(format!(
             "{DISPLAY_NAME}: {url} names a page on the site, not an image — a category page \
              is one URL shared by every wallpaper listed on it. Keep a browsed result with: \
-             muralis browse '{DISPLAY_NAME}' --category {slug} | jq -c '.results[0]' | \
+             muralis browse {DISPLAY_NAME} --category {slug} | jq -c '.results[0]' | \
              muralis favorites keep"
         ))
     }
@@ -629,6 +633,12 @@ mod tests {
             why.contains("favorites keep"),
             "and how to keep a browsed result instead: {why}"
         );
+        assert!(
+            why.contains(&format!(
+                "muralis browse {DISPLAY_NAME} --category space-wallpapers"
+            )),
+            "the command it hands over must run as written, unquoted: {why}"
+        );
     }
 
     #[test]
@@ -741,6 +751,55 @@ mod tests {
         assert_eq!(chosen[0].source_type(), "ultrawide");
     }
 
+    /// The display name is cosmetic; `source_type` is identity. A Library row
+    /// written before the rename keys on the latter, so it must survive it.
+    #[tokio::test]
+    async fn a_wallpaper_kept_before_the_rename_is_still_reported_as_favorited() {
+        let kept = source(CATEGORY_PAGE)
+            .browse(Some("32-9-wallpapers"), 1, 24, AspectRatioFilter::All)
+            .await
+            .expect("the captured category page parses")
+            .remove(0);
+
+        let db = muralis_core::db::Database::open_in_memory().expect("in-memory Library");
+        db.insert_wallpaper(&muralis_core::models::Wallpaper {
+            id: "sha256-of-the-master".into(),
+            source_type: muralis_core::models::SourceType::new("ultrawide"),
+            source_id: kept.source_id.clone(),
+            source_url: Some(kept.source_url.clone()),
+            width: kept.width,
+            height: kept.height,
+            tags: vec![],
+            file_path: "/data/wallpapers/sha256-of-the-master.jpg".into(),
+            added_at: "2026-09-01T00:00:00Z".into(),
+            last_used: None,
+            use_count: 0,
+        })
+        .expect("a row kept before the rename");
+
+        assert!(
+            db.is_favorited_by_source(kept.source_type.as_str(), &kept.source_id)
+                .unwrap(),
+            "renaming the Source must not orphan what the Library already holds"
+        );
+    }
+
+    #[test]
+    fn the_display_name_can_be_typed_on_a_shell_without_quoting() {
+        let src = source(CATEGORY_PAGE);
+        let name = src.name();
+
+        assert!(
+            !name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric()),
+            "a built-in Source is named on the CLI verbatim; \
+             '{name}' would need quoting or escaping"
+        );
+        assert!(
+            name.to_lowercase().contains("ultrawide"),
+            "the recognisable part of the name stays: {name}"
+        );
+    }
+
     #[tokio::test]
     async fn searching_this_source_is_refused_and_points_at_browse() {
         let err = source(CATEGORY_PAGE)
@@ -750,7 +809,14 @@ mod tests {
         let msg = err.to_string();
 
         assert!(msg.contains("browse"), "{msg}");
-        assert!(msg.contains(DISPLAY_NAME), "{msg}");
+        assert!(
+            msg.contains(&format!("muralis browse {DISPLAY_NAME} --category")),
+            "the way out must be copy-pasteable as written, unquoted: {msg}"
+        );
+        assert!(
+            !msg.contains(&format!("'{DISPLAY_NAME}'")),
+            "a one-word name needs no defensive quoting: {msg}"
+        );
     }
 
     #[tokio::test]

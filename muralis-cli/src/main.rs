@@ -295,6 +295,22 @@ fn source_info(s: &dyn WallpaperSource) -> SourceInfo {
     }
 }
 
+/// A **Source** name as it must be typed to name that Source again. Built-in
+/// names are single words and are handed over verbatim; a user-chosen name — a
+/// feed entry, a booru host — may hold spaces, and only then is it quoted, so
+/// every command muralis prints runs as written.
+fn as_typed(name: &str) -> std::borrow::Cow<'_, str> {
+    if !name.is_empty()
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.')
+    {
+        std::borrow::Cow::Borrowed(name)
+    } else {
+        std::borrow::Cow::Owned(format!("'{}'", name.replace('\'', r"'\''")))
+    }
+}
+
 /// The **Sources** a `search` invocation actually asks.
 ///
 /// Unscoped, that is every **Searched** Source and no **Browsed** one — a feed
@@ -313,7 +329,8 @@ fn sources_for_search<'a>(
         .ok_or_else(|| anyhow::anyhow!("unknown source: {name}"))?;
     if src.retrieval_mode() == RetrievalMode::Browsed {
         anyhow::bail!(
-            "'{name}' is a browsed source and takes no query; use: muralis browse '{name}'"
+            "'{name}' is a browsed source and takes no query; use: muralis browse {typed}",
+            typed = as_typed(name)
         );
     }
     Ok(vec![src])
@@ -328,7 +345,8 @@ fn browse_target<'a>(registry: &'a SourceRegistry, name: &str) -> Result<&'a dyn
         .ok_or_else(|| anyhow::anyhow!("unknown source: {name}"))?;
     if src.retrieval_mode() != RetrievalMode::Browsed {
         anyhow::bail!(
-            "'{name}' is a searched source; use: muralis search <query> --source '{name}'"
+            "'{name}' is a searched source; use: muralis search <query> --source {typed}",
+            typed = as_typed(name)
         );
     }
     Ok(src)
@@ -781,6 +799,27 @@ mod tests {
     }
 
     #[test]
+    fn the_way_out_of_a_refused_search_runs_as_written_however_the_source_is_named() {
+        let one_word = sources_for_search(&registry(), Some("ultrawide"))
+            .map(|t| names(&t))
+            .expect_err("browsed sources do not answer queries")
+            .to_string();
+        assert!(
+            one_word.contains("muralis browse ultrawide"),
+            "a one-word name needs no quoting, so it gets none: {one_word}"
+        );
+
+        let user_named = sources_for_search(&registry(), Some("daily feed"))
+            .map(|t| names(&t))
+            .expect_err("browsed sources do not answer queries")
+            .to_string();
+        assert!(
+            user_named.contains("muralis browse 'daily feed'"),
+            "a user-chosen name with a space still has to run as written: {user_named}"
+        );
+    }
+
+    #[test]
     fn searching_a_named_searched_source_still_scopes_to_it() {
         let registry = registry();
         let targets = sources_for_search(&registry, Some("wallhaven")).unwrap();
@@ -800,7 +839,12 @@ mod tests {
             .map(|s| s.name().to_string())
             .expect_err("a searched source has nothing to browse");
 
-        assert!(err.to_string().contains("search"), "{err}");
+        let msg = err.to_string();
+        assert!(msg.contains("search"), "{msg}");
+        assert!(
+            msg.contains("--source wallhaven"),
+            "the way back must run as written too: {msg}"
+        );
     }
 
     #[test]

@@ -113,10 +113,10 @@ enabled = false
 # user_id = "YOUR_RULE34_USER_ID"
 
 # ultrawidewallpapers.net — a BROWSED source: no query, no search field. Reach
-# it with `muralis browse "Ultrawide Wallpapers" --category <slug>`; the slugs
-# it publishes are the ones listed here. Omit `categories` for the shipped
-# default set. Every image is a 7680x2160 (32:9) master, served unaltered — an
-# aspect filter other than 32x9 (or `all`) will correctly return nothing.
+# it with `muralis browse Ultrawide --category <slug>`; the slugs it publishes
+# are the ones listed here. Omit `categories` for the shipped default set. Every
+# image is a 7680x2160 (32:9) master, served unaltered — an aspect filter other
+# than 32x9 (or `all`) will correctly return nothing.
 [sources.ultrawide]
 enabled = false
 # categories = [

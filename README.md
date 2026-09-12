@@ -284,7 +284,7 @@ url = "https://www.reddit.com/r/ImaginaryLandscapes/.rss"
 # url = "https://www.reddit.com/r/ultrawidemasterrace/.rss"
 ```
 
-#### Ultrawide Wallpapers (browsed)
+#### Ultrawide (browsed)
 
 [ultrawidewallpapers.net](https://www.ultrawidewallpapers.net/) has no API and no
 search — only category pages. It is therefore a *browsed* source: no query, no
@@ -299,11 +299,11 @@ enabled = true
 
 ```bash
 muralis sources list                                            # slugs it publishes
-muralis browse "Ultrawide Wallpapers" --category 32-9-wallpapers
+muralis browse Ultrawide --category 32-9-wallpapers
 
 # Keeping a browsed result: hand the result over, don't paste its source_url —
 # that names the category page, which every wallpaper on it shares.
-muralis browse "Ultrawide Wallpapers" --category space-wallpapers \
+muralis browse Ultrawide --category space-wallpapers \
   | jq -c '.results[0]' | muralis favorites keep
 ```
 
