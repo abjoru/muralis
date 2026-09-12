@@ -1612,6 +1612,8 @@ name = "muralis"
 version = "0.3.0"
 dependencies = [
  "anyhow",
+ "async-trait",
+ "bytes",
  "clap",
  "muralis-core",
  "muralis-source-booru",

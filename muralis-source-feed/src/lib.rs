@@ -9,7 +9,7 @@ use tokio::sync::Semaphore;
 
 use muralis_core::error::Result;
 use muralis_core::models::{SourceType, WallpaperPreview};
-use muralis_core::sources::{AspectRatioFilter, SourceContext, WallpaperSource};
+use muralis_core::sources::{AspectRatioFilter, RetrievalMode, SourceContext, WallpaperSource};
 
 static IMG_SEL: LazyLock<Selector> =
     LazyLock::new(|| Selector::parse("img[src]").expect("valid selector"));
@@ -73,9 +73,39 @@ impl WallpaperSource for FeedSource {
         "feed"
     }
 
+    /// A feed is **Browsed**: it has no query dimension and no paging
+    /// dimension, so it must never be fanned out over by an unscoped search.
+    fn retrieval_mode(&self) -> RetrievalMode {
+        RetrievalMode::Browsed
+    }
+
+    /// Refused rather than silently ignoring the query. A feed handed
+    /// "sunset" used to return its whole contents unfiltered, interleaved
+    /// with genuine matches — the defect this mode exists to remove.
     async fn search(
         &self,
         _query: &str,
+        _page: u32,
+        _per_page: u32,
+        _aspect: AspectRatioFilter,
+    ) -> Result<Vec<WallpaperPreview>> {
+        Err(muralis_core::error::MuralisError::Source {
+            source_type: "feed".into(),
+            op: "search".into(),
+            kind: format!(
+                "'{}' is a browsed source with no query dimension; use: muralis browse '{}'",
+                self.config.name, self.config.name
+            ),
+        })
+    }
+
+    /// A feed publishes no categories, and it is a fixed set with no
+    /// pagination upstream — so `category` is always `None` and `page` /
+    /// `per_page` do not slice it. Every entry the feed currently carries,
+    /// aspect-filtered, is one page.
+    async fn browse(
+        &self,
+        _category: Option<&str>,
         _page: u32,
         _per_page: u32,
         aspect: AspectRatioFilter,
@@ -95,33 +125,7 @@ impl WallpaperSource for FeedSource {
             }
         })?;
 
-        let mut previews = Vec::new();
-
-        for entry in &feed.entries {
-            if let Some((image_url, width, height)) = extract_image(entry) {
-                let id = entry.id.replace(['/', ':', '.'], "_");
-                let title = entry
-                    .title
-                    .as_ref()
-                    .map(|t| t.content.clone())
-                    .unwrap_or_default();
-
-                previews.push(WallpaperPreview {
-                    source_type: SourceType::new("feed"),
-                    source_id: id,
-                    source_url: entry
-                        .links
-                        .first()
-                        .map(|l| l.href.clone())
-                        .unwrap_or_default(),
-                    thumbnail_url: image_url.clone(),
-                    full_url: image_url,
-                    width,
-                    height,
-                    tags: vec![title, self.config.name.clone()],
-                });
-            }
-        }
+        let mut previews = previews_from_feed(&feed, &self.config.name, aspect);
 
         // Fetch dimensions for entries with unknown sizes
         let semaphore = Arc::new(Semaphore::new(MAX_DIM_CONCURRENCY));
@@ -169,6 +173,46 @@ impl WallpaperSource for FeedSource {
             .await?;
         Ok(bytes)
     }
+}
+
+/// Turn a parsed feed into **Previews**, dropping entries whose known
+/// dimensions miss the aspect filter. Entries whose size is still unknown are
+/// kept — `matches()` passes them through — and filtered again once the
+/// dimension fetch has resolved them.
+fn previews_from_feed(
+    feed: &feed_rs::model::Feed,
+    feed_name: &str,
+    aspect: AspectRatioFilter,
+) -> Vec<WallpaperPreview> {
+    feed.entries
+        .iter()
+        .filter_map(|entry| {
+            let (image_url, width, height) = extract_image(entry)?;
+            if !aspect.matches(width, height) {
+                return None;
+            }
+            let title = entry
+                .title
+                .as_ref()
+                .map(|t| t.content.clone())
+                .unwrap_or_default();
+
+            Some(WallpaperPreview {
+                source_type: SourceType::new("feed"),
+                source_id: entry.id.replace(['/', ':', '.'], "_"),
+                source_url: entry
+                    .links
+                    .first()
+                    .map(|l| l.href.clone())
+                    .unwrap_or_default(),
+                thumbnail_url: image_url.clone(),
+                full_url: image_url,
+                width,
+                height,
+                tags: vec![title, feed_name.to_string()],
+            })
+        })
+        .collect()
 }
 
 /// Fetch image dimensions via partial HTTP download (first 32KB).
@@ -292,6 +336,7 @@ fn is_image_url(url: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use muralis_core::sources::select_category;
 
     #[test]
     fn test_extract_img_from_html() {
@@ -448,6 +493,100 @@ mod tests {
         let sources = create_sources(&table, client, &SourceContext::default());
         assert_eq!(sources.len(), 1);
         assert_eq!(sources[0].name(), "active");
+    }
+
+    fn feed_source() -> FeedSource {
+        FeedSource {
+            config: FeedConfig {
+                name: "test feed".into(),
+                url: "https://example.com/feed.xml".into(),
+                enabled: true,
+            },
+            client: reqwest::Client::new(),
+        }
+    }
+
+    #[test]
+    fn browsing_honors_the_aspect_filter_against_known_dimensions() {
+        let xml = br#"<?xml version="1.0" encoding="UTF-8"?>
+        <rss version="2.0" xmlns:media="http://search.yahoo.com/mrss/">
+            <channel>
+                <title>Test</title>
+                <item>
+                    <title>Widescreen</title>
+                    <guid>wide-001</guid>
+                    <media:content url="https://example.com/wide.jpg" type="image/jpeg" width="1920" height="1080"/>
+                </item>
+                <item>
+                    <title>Also widescreen</title>
+                    <guid>wide-002</guid>
+                    <media:content url="https://example.com/wide2.jpg" type="image/jpeg" width="3840" height="2160"/>
+                </item>
+            </channel>
+        </rss>"#;
+        let feed = feed_rs::parser::parse(&xml[..]).unwrap();
+
+        let all_16x9 = previews_from_feed(&feed, "test feed", AspectRatioFilter::Ratio16x9);
+        assert_eq!(all_16x9.len(), 2);
+        assert_eq!(all_16x9[0].source_type.as_str(), "feed");
+
+        // A feed whose entries are all 16:9 has nothing to offer at 32:9.
+        assert!(previews_from_feed(&feed, "test feed", AspectRatioFilter::Ratio32x9).is_empty());
+
+        // No filter keeps everything.
+        assert_eq!(
+            previews_from_feed(&feed, "test feed", AspectRatioFilter::All).len(),
+            2
+        );
+    }
+
+    #[test]
+    fn entries_of_unknown_size_survive_the_parse_for_the_dimension_fetch() {
+        let xml = br#"<?xml version="1.0" encoding="UTF-8"?>
+        <rss version="2.0">
+            <channel>
+                <title>Test</title>
+                <item>
+                    <title>Unknown size</title>
+                    <guid>unknown-001</guid>
+                    <enclosure url="https://example.com/x.jpg" type="image/jpeg" length="1"/>
+                </item>
+            </channel>
+        </rss>"#;
+        let feed = feed_rs::parser::parse(&xml[..]).unwrap();
+
+        // Filtering at parse time would discard these before their size is
+        // resolved; they are filtered again once dimensions are fetched.
+        let previews = previews_from_feed(&feed, "test feed", AspectRatioFilter::Ratio32x9);
+        assert_eq!(previews.len(), 1);
+        assert_eq!(previews[0].width, 0);
+    }
+
+    #[test]
+    fn a_feed_is_browsed_and_publishes_no_categories() {
+        let feed = feed_source();
+
+        assert_eq!(feed.retrieval_mode(), RetrievalMode::Browsed);
+        assert!(
+            feed.categories().is_empty(),
+            "selecting the feed is the selection"
+        );
+        // Zero categories is the feed's correct declaration: browsing it takes
+        // no category, and naming one is refused.
+        assert_eq!(select_category(&feed, None).unwrap(), None);
+        assert!(select_category(&feed, Some("landscapes")).is_err());
+    }
+
+    #[tokio::test]
+    async fn searching_a_feed_is_refused_and_points_at_browse() {
+        let err = feed_source()
+            .search("sunset", 1, 24, AspectRatioFilter::All)
+            .await
+            .expect_err("a feed has no query dimension");
+        let msg = err.to_string();
+
+        assert!(msg.contains("browse"), "{msg}");
+        assert!(msg.contains("test feed"), "{msg}");
     }
 
     #[test]

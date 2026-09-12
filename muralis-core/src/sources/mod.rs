@@ -1,6 +1,7 @@
 use std::fmt;
 
 use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
 
 use crate::error::Result;
 use crate::models::WallpaperPreview;
@@ -120,6 +121,49 @@ impl fmt::Display for AspectRatioFilter {
     }
 }
 
+/// How a **Source** is retrieved from — a declared property of the Source, not
+/// an inference from its type name.
+///
+/// **Searched** Sources accept a query and participate in an unscoped
+/// `search`. **Browsed** Sources have no query dimension at all: they are
+/// excluded from unscoped search and reachable only by naming them, because a
+/// Source that silently ignores the query it is handed pollutes every result
+/// set it is fanned out over.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RetrievalMode {
+    /// Accepts a query; participates in unscoped `search`.
+    Searched,
+    /// Takes no query; reachable only by name, optionally naming a category.
+    Browsed,
+}
+
+impl fmt::Display for RetrievalMode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Searched => write!(f, "searched"),
+            Self::Browsed => write!(f, "browsed"),
+        }
+    }
+}
+
+/// A named, selectable slice of a **Browsed** Source's catalog. The `slug` is
+/// what a caller passes; the `label` is what a UI renders.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SourceCategory {
+    pub slug: String,
+    pub label: String,
+}
+
+impl SourceCategory {
+    pub fn new(slug: impl Into<String>, label: impl Into<String>) -> Self {
+        Self {
+            slug: slug.into(),
+            label: label.into(),
+        }
+    }
+}
+
 #[async_trait]
 pub trait WallpaperSource: Send + Sync {
     /// Display name / tab label (e.g. "Wallhaven", "Bing Daily")
@@ -143,10 +187,91 @@ pub trait WallpaperSource: Send + Sync {
     ) -> Result<Vec<WallpaperPreview>>;
     async fn download(&self, preview: &WallpaperPreview) -> Result<bytes::Bytes>;
 
+    /// This Source's **retrieval mode**. Defaults to `Searched`, so a Source
+    /// that declares nothing keeps its existing behavior with no edit.
+    fn retrieval_mode(&self) -> RetrievalMode {
+        RetrievalMode::Searched
+    }
+
+    /// The categories a **Browsed** Source publishes. Zero categories is
+    /// meaningful and is the **Feed Source**'s case: selecting the feed *is*
+    /// the selection. A **Searched** Source publishes none.
+    fn categories(&self) -> Vec<SourceCategory> {
+        Vec::new()
+    }
+
+    /// Retrieve from a **Browsed** Source: no query, optionally a category
+    /// slug, paged and aspect-filtered exactly as `search` is. Defaults to
+    /// refusing, because a **Searched** Source has nothing to browse.
+    async fn browse(
+        &self,
+        _category: Option<&str>,
+        _page: u32,
+        _per_page: u32,
+        _aspect: AspectRatioFilter,
+    ) -> Result<Vec<WallpaperPreview>> {
+        Err(crate::error::MuralisError::Source {
+            source_type: self.source_type().to_string(),
+            op: "browse".into(),
+            kind: format!(
+                "'{}' is a searched source; use: muralis search",
+                self.name()
+            ),
+        })
+    }
+
     /// Resolve a URL from this source into a WallpaperPreview.
     /// Sources opt in by overriding; default returns None.
     async fn resolve_url(&self, _url: &str) -> Result<Option<WallpaperPreview>> {
         Ok(None)
+    }
+}
+
+/// Resolve the category a browse request names against what the Source
+/// actually publishes, before any network call.
+///
+/// A Source publishing zero categories (the **Feed Source**) takes `None`:
+/// selecting the feed *is* the selection. A Source publishing categories
+/// requires one to be named — browsing "everything" is not a slice it offers.
+/// Either way a slug it does not publish is refused with the ones it does, so
+/// a caller can correct itself without reading the config.
+pub fn select_category(
+    source: &dyn WallpaperSource,
+    requested: Option<&str>,
+) -> Result<Option<String>> {
+    let published = source.categories();
+    let refuse = |kind: String| {
+        Err(crate::error::MuralisError::Source {
+            source_type: source.source_type().to_string(),
+            op: "browse".into(),
+            kind,
+        })
+    };
+    let available = || {
+        published
+            .iter()
+            .map(|c| c.slug.as_str())
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+
+    match requested {
+        None if published.is_empty() => Ok(None),
+        None => refuse(format!(
+            "'{}' publishes categories; name one with --category. available: {}",
+            source.name(),
+            available()
+        )),
+        Some(slug) if published.is_empty() => refuse(format!(
+            "'{}' publishes no categories; browse it without --category (got '{slug}')",
+            source.name()
+        )),
+        Some(slug) if published.iter().any(|c| c.slug == slug) => Ok(Some(slug.to_string())),
+        Some(slug) => refuse(format!(
+            "'{}' does not publish category '{slug}'. available: {}",
+            source.name(),
+            available()
+        )),
     }
 }
 
@@ -179,10 +304,156 @@ impl SourceRegistry {
     pub fn iter(&self) -> impl Iterator<Item = &dyn WallpaperSource> {
         self.sources.iter().map(|s| s.as_ref())
     }
+
+    /// Only the **Searched** Sources — the set an unscoped `search` fans out
+    /// over. Filtering lives here so the call site cannot forget it and let a
+    /// **Browsed** Source leak query-ignoring results into a query's answer.
+    pub fn searched(&self) -> impl Iterator<Item = &dyn WallpaperSource> {
+        self.iter()
+            .filter(|s| s.retrieval_mode() == RetrievalMode::Searched)
+    }
 }
 
 impl Default for SourceRegistry {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::SourceType;
+
+    /// A **Source** that declares nothing beyond the required methods — the
+    /// shape every existing API source crate has today.
+    struct Undeclared;
+
+    #[async_trait]
+    impl WallpaperSource for Undeclared {
+        fn name(&self) -> &str {
+            "undeclared"
+        }
+        fn source_type(&self) -> &str {
+            "undeclared"
+        }
+        async fn search(
+            &self,
+            _query: &str,
+            _page: u32,
+            _per_page: u32,
+            _aspect: AspectRatioFilter,
+        ) -> Result<Vec<WallpaperPreview>> {
+            Ok(Vec::new())
+        }
+        async fn download(&self, _preview: &WallpaperPreview) -> Result<bytes::Bytes> {
+            Ok(bytes::Bytes::new())
+        }
+    }
+
+    /// A **Browsed** Source with a configurable category list.
+    struct Browsable {
+        categories: Vec<SourceCategory>,
+    }
+
+    #[async_trait]
+    impl WallpaperSource for Browsable {
+        fn name(&self) -> &str {
+            "browsable"
+        }
+        fn source_type(&self) -> &str {
+            "browsable"
+        }
+        fn retrieval_mode(&self) -> RetrievalMode {
+            RetrievalMode::Browsed
+        }
+        fn categories(&self) -> Vec<SourceCategory> {
+            self.categories.clone()
+        }
+        async fn search(
+            &self,
+            _query: &str,
+            _page: u32,
+            _per_page: u32,
+            _aspect: AspectRatioFilter,
+        ) -> Result<Vec<WallpaperPreview>> {
+            unreachable!("a browsed source is never searched")
+        }
+        async fn download(&self, _preview: &WallpaperPreview) -> Result<bytes::Bytes> {
+            Ok(bytes::Bytes::new())
+        }
+    }
+
+    #[test]
+    fn a_source_that_declares_nothing_is_searched_with_no_categories() {
+        let s = Undeclared;
+        assert_eq!(s.retrieval_mode(), RetrievalMode::Searched);
+        assert!(s.categories().is_empty());
+        let _ = SourceType::new("undeclared");
+    }
+
+    #[test]
+    fn the_registry_yields_only_searched_sources_so_the_call_site_cannot_forget() {
+        let mut registry = SourceRegistry::new();
+        registry.register(Box::new(Undeclared));
+        registry.register(Box::new(Browsable {
+            categories: Vec::new(),
+        }));
+
+        assert_eq!(registry.names(), vec!["undeclared", "browsable"]);
+        assert_eq!(
+            registry.searched().map(|s| s.name()).collect::<Vec<_>>(),
+            vec!["undeclared"]
+        );
+    }
+
+    fn with_categories() -> Browsable {
+        Browsable {
+            categories: vec![
+                SourceCategory::new("space", "Space"),
+                SourceCategory::new("nature", "Nature"),
+            ],
+        }
+    }
+
+    #[test]
+    fn an_unpublished_category_is_refused_with_the_ones_that_are_published() {
+        let err = select_category(&with_categories(), Some("volcanoes"))
+            .expect_err("a category the source does not publish is not retrievable");
+        let msg = err.to_string();
+
+        assert!(msg.contains("volcanoes"), "{msg}");
+        assert!(msg.contains("space"), "{msg}");
+        assert!(msg.contains("nature"), "{msg}");
+    }
+
+    #[test]
+    fn a_published_category_selects_by_slug() {
+        assert_eq!(
+            select_category(&with_categories(), Some("space")).unwrap(),
+            Some("space".to_string())
+        );
+    }
+
+    #[test]
+    fn zero_categories_means_selecting_the_source_is_the_selection() {
+        let feed_shaped = Browsable {
+            categories: Vec::new(),
+        };
+
+        assert_eq!(select_category(&feed_shaped, None).unwrap(), None);
+
+        let err =
+            select_category(&feed_shaped, Some("anything")).expect_err("there is no slice to name");
+        assert!(err.to_string().contains("publishes no categories"));
+    }
+
+    #[test]
+    fn a_categorised_source_requires_a_category_to_retrieve_anything() {
+        let err = select_category(&with_categories(), None)
+            .expect_err("browsing everything is not a slice it offers");
+        let msg = err.to_string();
+
+        assert!(msg.contains("space") && msg.contains("nature"), "{msg}");
     }
 }

@@ -7,7 +7,7 @@ Domain and architecture language for muralis — a Wayland wallpaper manager tha
 ### Sources
 
 **Source**:
-A provider of wallpapers, implementing the `WallpaperSource` trait (`search`, `download`, `resolve_url`).
+A provider of wallpapers, implementing the `WallpaperSource` trait (`search`, `browse`, `download`, `resolve_url`), and declaring a **Retrieval mode** that says which of `search`/`browse` actually answers.
 _Avoid_: provider, plugin (reserve "plugin" for the crate, not the running object)
 
 **RestSource**:
@@ -24,8 +24,29 @@ _Avoid_: config (that is the user's TOML), spec
 **Auth** (strategy):
 How a **RestSource** injects credentials. Variants: `QueryParam` (one key, wallhaven `apikey`), `Header` (unsplash/pexels), `QueryParams` (multiple query credentials together — Gelbooru's `api_key`+`user_id`, now mandatory since 2025), `None`. Secrets live here, never in `extra_query`.
 
+**Retrieval mode**:
+A declared property of every **Source**, not an inference from its type name: **Searched** or **Browsed**. It is what the `SourceRegistry` splits on, what `sources list` reports, and what decides which CLI verb answers. Defaulted to `Searched` on the trait, so the five API source crates declare nothing and behave exactly as before.
+_Avoid_: source kind, browsable flag (it is two named modes, not a boolean on one of them)
+
+**Searched Source**:
+A **Source** that accepts a query. Participates in an unscoped `search` (`muralis search <query>` with no `--source`) and in the GUI's "All". Every **RestSource** is one.
+
+**Browsed Source**:
+A **Source** with no query dimension. Excluded from unscoped `search` and reachable only by naming it, through `muralis browse <source>`. Naming one on `search --source` is *refused* rather than answered: the **Feed Source** used to ignore the query it was handed and return its whole contents, so `muralis search sunset` interleaved every configured feed, unfiltered, with genuine matches. That is the defect the mode exists to remove — so a Browsed Source refuses a query instead of quietly discarding it.
+_Avoid_: feed source (feeds are the first Browsed Source, not the only possible one), gallery source
+
+**Category**:
+A named, selectable slice of a **Browsed Source**'s catalog: a stable `slug` the caller passes and a human-readable `label` a UI renders. A Browsed Source publishing categories requires one to be named to retrieve anything — browsing "everything" is not a slice it offers — and a slug it does not publish is refused with the list of ones it does.
+_Avoid_: tag (that is a **Preview**'s metadata), collection, section
+
+**Zero categories**:
+The **Feed Source**'s correct declaration, and a meaningful answer rather than an unfilled one: a feed is a single undifferentiated stream, so *selecting the feed is the selection*. Browsing it takes no category, and naming one is refused. A Browsed Source is therefore not obliged to have categories — publishing none is a statement about its shape, not a gap.
+
+**browse (verb)**:
+The **CLI contract**'s entry point to a **Browsed Source**: `muralis browse <source> [--category <slug>] [--page] [--per-page] [--aspect]`. It pages and aspect-filters exactly as `search` does and emits the *same JSON result shape*, `is_favorited` included, so every existing consumer of a search result works unchanged against a browse result. One function renders both.
+
 **Feed Source**:
-The non-REST **Source** backed by RSS/Atom; not a **RestSource** (no paged JSON API, fetches image dimensions itself).
+The non-REST **Source** backed by RSS/Atom; not a **RestSource** (no paged JSON API, fetches image dimensions itself). The first **Browsed Source**, declaring **Zero categories**. It has no paging dimension either: every entry the feed currently carries, aspect-filtered, is one page, so `page`/`per_page` do not slice it.
 
 **Booru Source**:
 A **RestSource** for the danbooru-family imageboards (Danbooru, Moebooru = yande.re/Konachan, Gelbooru, e621…). One crate (`muralis-source-booru`), many hosts: configured as multiple instances (like **Feed Source**), each instance naming a host plus a **Flavor**. Tag-based search; dimensions present in the JSON. The NSFW/anime track. Aspect filtering is client-side **Page-filling** over a **Block** (no server aspect param) — boorus express aspect inside the `tags` string and cap unauthenticated searches at 2 tags, so the tag budget is spent on `rating:` + the user query, not aspect.
@@ -233,6 +254,9 @@ _Avoid_: API, treating it as the Consumer seam (that is the **IPC contract**)
 - A **RestSource** is built from exactly one **Source Descriptor** and one **HttpFetch** adapter.
 - A **RestSource** produces zero or more **Previews** per logical page via **Page-filling** over a **Block** of upstream pages.
 - The **Feed Source** is a **Source** but never a **RestSource**.
+- Every **Source** declares a **Retrieval mode**; `SourceRegistry::searched()` yields only the **Searched** ones, so the unscoped-search call site cannot forget to filter and let a **Browsed Source** leak into a query's answer.
+- A **Browsed Source** publishes zero or more **Categories**; a **Searched Source** publishes none.
+- `browse` and `search` render **Previews** through one function, so their output shapes cannot drift apart.
 - The `SourceRegistry` holds **Sources** (any mix of **RestSource**, **Booru Source**, **Pixabay Source**, **Feed Source**).
 - `create_sources` takes a **SourceContext** (global cross-cutting knobs: **Content Safety policy**, `min_width`/`min_height`) in addition to the `[sources]` table + client. The contract is the same for every plugin.
 - A gelbooru **Flavor** instance points at any gelbooru-clone host by `base` (gelbooru, rule34, safebooru, realbooru) — multi-host for free.
@@ -255,6 +279,8 @@ _Avoid_: API, treating it as the Consumer seam (that is the **IPC contract**)
 > **Maintainer:** "No — paging is stateless. Page 2 is the next **Block** of upstream pages. **Page-filling** runs inside that block; if only three match, you get three. We accept the leak — the grid is infinite-scroll, not random-access. A logical page that returns zero matches is the CLI's end-of-results signal; `search` still returns a plain `Vec`."
 
 ## Flagged ambiguities
+
+- the searched/browsed distinction was already load-bearing before it was named: the GUI partitioned its filter bar by comparing `source_type` against the literal string `"feed"`, and avoided the unfiltered-feed defect only by never firing an empty-query "All" search. Resolved: it is a **Retrieval mode** declared by the Source and reported by `sources list`. The QML string test is stale but still present — it is retired in a later slice, and until then the GUI's feed dropdown issues a `search --source <feed>` that now refuses.
 
 - "filter" was used for both the user's aspect choice and the act of discarding non-matching **Previews** — resolved: the choice is `AspectRatioFilter`; the act is part of **Page-filling**.
 - aspect filtering previously lived in the CLI caller (`main.rs:230`); it now lives in each **Source**: **RestSource** filters via **Page-filling**, and the **Feed Source** filters after resolving dimensions. The CLI no longer post-filters at all — every **Source** honors the aspect contract itself.

@@ -82,6 +82,9 @@ muralis mode random         # Switch display mode
 muralis pause               # Pause rotation
 muralis resume              # Resume rotation
 muralis reload              # Reload config
+muralis search <query>      # Search every searched source (JSON)
+muralis browse <source>     # Retrieve from a browsed source, e.g. a feed (JSON)
+muralis sources list        # List sources with retrieval mode + categories (JSON)
 muralis favorites list      # List all favorites (JSON)
 muralis favorites stats     # Show favorites count and disk usage
 muralis cache stats         # Show cache size
