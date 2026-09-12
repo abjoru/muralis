@@ -254,6 +254,14 @@ impl WallpaperSource for UltrawideSource {
         true
     }
 
+    /// The **Gallery endpoint** answers an untagged request with the whole
+    /// catalogue, newest first — so naming no tag is a selection this Source
+    /// can serve, not an unfinished one. Clearing the selection means "show
+    /// everything", which is what the site's own gallery opens on.
+    fn empty_selection_is_meaningful(&self) -> bool {
+        true
+    }
+
     async fn search(
         &self,
         _query: &str,
@@ -281,12 +289,6 @@ impl WallpaperSource for UltrawideSource {
         per_page: u32,
         aspect: AspectRatioFilter,
     ) -> Result<Vec<WallpaperPreview>> {
-        if categories.is_empty() {
-            return Err(source_error(
-                "browse",
-                format!("{DISPLAY_NAME} publishes categories; name one with --category"),
-            ));
-        }
         let offset = page.saturating_sub(1).saturating_mul(per_page);
         let url = gallery_request(categories, offset, per_page);
         let (status, body) = self
@@ -439,18 +441,26 @@ fn tag_list<S: AsRef<str>>(tags: &[S]) -> String {
 /// string. Several tags are the intersection of all of them. Tags carry spaces
 /// and punctuation (`Pixel Art`, `Crops great @ 16:9`), so the encoding — of
 /// the separator included — happens here rather than in a format string.
+/// An empty selection carries no `tag` at all rather than an empty one: the
+/// endpoint treats both alike, but a request for the whole catalogue should
+/// read as one.
 pub(crate) fn gallery_request<S: AsRef<str>>(tags: &[S], offset: u32, limit: u32) -> String {
     let mut url = Url::parse(GALLERY_ENDPOINT).expect("a valid endpoint URL");
     url.query_pairs_mut()
         .append_pair("offset", &offset.to_string())
-        .append_pair("limit", &limit.to_string())
-        .append_pair("tag", &tag_list(tags));
+        .append_pair("limit", &limit.to_string());
+    if !tags.is_empty() {
+        url.query_pairs_mut().append_pair("tag", &tag_list(tags));
+    }
     url.into()
 }
 
 /// The gallery page as a human would open it, filtered to the same selection —
 /// what a **Preview** links back to.
 fn gallery_page_for<S: AsRef<str>>(tags: &[S]) -> String {
+    if tags.is_empty() {
+        return GALLERY_PAGE.to_string();
+    }
     let mut url = Url::parse(GALLERY_PAGE).expect("a valid gallery URL");
     url.query_pairs_mut()
         .append_pair(GALLERY_TAGS_PARAM, &tag_list(tags));
@@ -694,6 +704,42 @@ mod tests {
         assert!(
             urls.iter().all(|u| u == &urls[0]),
             "order and repeats are not part of the selection: {urls:?}"
+        );
+    }
+
+    /// Naming no tag is a selection this Source answers, not an unfinished
+    /// one: the endpoint serves the whole catalogue untagged, so clearing the
+    /// selection means "everything" rather than "nothing yet".
+    #[tokio::test]
+    async fn no_tag_at_all_is_a_selection_the_source_answers() {
+        let src = source(PAGE_1);
+
+        assert!(src.empty_selection_is_meaningful());
+        assert_eq!(select_categories(&src, &[]).unwrap(), Vec::<String>::new());
+
+        let previews = src
+            .browse(&[], 1, 24, AspectRatioFilter::All)
+            .await
+            .unwrap();
+        assert!(
+            !previews.is_empty(),
+            "an empty selection retrieves the untagged feed"
+        );
+    }
+
+    /// A request for everything carries no `tag` at all. The endpoint treats an
+    /// empty `tag=` the same way, but the URL that is fetched is also the URL a
+    /// failure names, so it should read as what it is.
+    #[test]
+    fn an_empty_selection_sends_no_tag_parameter() {
+        let all = gallery_request(&[] as &[String], 0, 24);
+        assert!(!all.contains("tag"), "no tag parameter at all: {all}");
+        assert!(all.contains("offset=0") && all.contains("limit=24"));
+
+        let dark = gallery_request(&tags(&["Dark"]), 0, 24);
+        assert!(
+            dark.contains("tag=Dark"),
+            "a named tag still travels: {dark}"
         );
     }
 

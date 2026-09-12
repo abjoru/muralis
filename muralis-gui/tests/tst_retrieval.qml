@@ -31,10 +31,42 @@ TestCase {
         compare(Retrieval.categoriesOf(sources, "Wallhaven"), [])
         compare(Retrieval.categoriesOf(sources, "All"), [])
 
-        verify(Retrieval.needsCategory(sources, "Ultrawide"))
+        // Categorised and no feed behind them: a category has to be named.
+        verify(Retrieval.needsCategory(sources, "Curated"))
+        // Categorised *with* a feed behind them: naming none asks for it.
+        verify(!Retrieval.needsCategory(sources, "Ultrawide"))
         verify(!Retrieval.needsCategory(sources, "Bing Daily"))
         verify(!Retrieval.needsCategory(sources, "Wallhaven"))
         verify(!Retrieval.needsCategory(sources, "All"))
+    }
+
+    // Whether naming no category asks for anything is the Source's
+    // declaration, never the presence of categories. A source list that says
+    // nothing — an older CLI — does not, matching the trait default.
+    function test_whether_the_empty_selection_is_meaningful_is_read_from_the_source() {
+        var sources = fixture()
+
+        verify(Retrieval.emptySelectionIsMeaningful(sources, "Ultrawide"))
+        verify(!Retrieval.emptySelectionIsMeaningful(sources, "Curated"))
+        verify(!Retrieval.emptySelectionIsMeaningful(sources, "Bing Daily"))
+        verify(!Retrieval.emptySelectionIsMeaningful(sources, "Wallhaven"))
+        verify(!Retrieval.emptySelectionIsMeaningful(sources, "All"))
+
+        verify(!Retrieval.emptySelectionIsMeaningful(
+            [{ name: "Old", retrieval_mode: "browsed",
+               categories: [{ slug: "a", label: "A" }] }], "Old"))
+    }
+
+    // Clearing the selection on a Source with a feed behind its categories
+    // asks for the feed — the whole point of the declaration. The request
+    // carries no category option at all rather than an empty one.
+    function test_clearing_a_selection_asks_for_the_untagged_feed() {
+        compare(Retrieval.args(fixture(),
+                               { source: "Ultrawide", categories: [], page: 1, perPage: 24, aspect: "all" }),
+                ["browse", "Ultrawide", "--page", "1", "--per-page", "24"])
+        compare(Retrieval.args(fixture(),
+                               { source: "Ultrawide", page: 2, perPage: 24, aspect: "32x9" }),
+                ["browse", "Ultrawide", "--page", "2", "--per-page", "24", "--aspect", "32x9"])
     }
 
     // "All" and a searched source ask the search verb; the query and the
@@ -80,11 +112,11 @@ TestCase {
     // the CLI can answer, so none is issued.
     function test_a_categorised_source_without_a_category_issues_nothing() {
         compare(Retrieval.args(fixture(),
-                               { source: "Ultrawide", categories: [], page: 1, perPage: 24, aspect: "all" }),
+                               { source: "Curated", categories: [], page: 1, perPage: 24, aspect: "all" }),
                 null)
         // Clearing a selection lands here too, by the same route.
         compare(Retrieval.args(fixture(),
-                               { source: "Ultrawide", page: 1, perPage: 24, aspect: "all" }),
+                               { source: "Curated", page: 1, perPage: 24, aspect: "all" }),
                 null)
     }
 
@@ -204,18 +236,42 @@ TestCase {
     // Picking a categorised source is not yet a retrieval; the grid says what
     // is missing instead of looking like an empty result.
     function test_a_categorised_source_awaiting_a_category_says_so() {
-        var msg = Retrieval.gridMessage(fixture(), { source: "Ultrawide", categories: [], retrieved: false,
+        var msg = Retrieval.gridMessage(fixture(), { source: "Curated", categories: [], retrieved: false,
                                                      resultCount: 0 })
         verify(msg.text.indexOf("categor") >= 0, msg.text)
-        verify(msg.text.indexOf("Ultrawide") >= 0, msg.text)
+        verify(msg.text.indexOf("Curated") >= 0, msg.text)
         verify(!msg.isError)
 
         // Clearing a selection returns the grid to that same prompt rather
         // than to an empty result.
-        var cleared = Retrieval.gridMessage(fixture(), { source: "Ultrawide", categories: [],
+        var cleared = Retrieval.gridMessage(fixture(), { source: "Curated", categories: [],
                                                          retrieved: true, resultCount: 0 })
         compare(cleared.text, msg.text)
         verify(!cleared.isError)
+    }
+
+    // ...but a Source with a feed behind its categories is never awaiting one.
+    // Clearing its selection is a request, so the grid must not tell the user
+    // to pick something before it will show anything.
+    function test_a_source_with_a_feed_behind_its_categories_never_awaits_one() {
+        var waiting = Retrieval.gridMessage(fixture(), { source: "Ultrawide", categories: [],
+                                                         retrieved: false, resultCount: 0 })
+        verify(waiting.text.indexOf("Select a category") < 0, waiting.text)
+        verify(waiting.text.indexOf("Search for wallpapers") < 0,
+               "a browsed source is never told to search: " + waiting.text)
+        verify(!waiting.isError)
+
+        // Retrieved and full: nothing to say.
+        var feed = Retrieval.gridMessage(fixture(), { source: "Ultrawide", categories: [],
+                                                      retrieved: true, resultCount: 24 })
+        compare(feed.text, "")
+
+        // Retrieved and genuinely empty reads as empty, not as a prompt.
+        var empty = Retrieval.gridMessage(fixture(), { source: "Ultrawide", categories: [],
+                                                       retrieved: true, resultCount: 0 })
+        verify(empty.text.indexOf("Select a category") < 0, empty.text)
+        verify(empty.text.indexOf("Ultrawide") >= 0, empty.text)
+        verify(!empty.isError)
     }
 
     // Keeping hands the whole result over, browsed and searched alike: a
@@ -441,10 +497,12 @@ TestCase {
     function fixture() {
         return [
             { name: "Wallhaven", source_type: "wallhaven", retrieval_mode: "searched", categories: [] },
+            // Categories that combine, with an untagged feed behind them: the
+            // shape the real Ultrawide Source declares.
             { name: "Ultrawide", source_type: "ultrawide", retrieval_mode: "browsed",
               categories: [{ slug: "space", label: "Space" }, { slug: "nature", label: "Nature" },
                            { slug: "dark", label: "Dark" }],
-              categories_combine: true },
+              categories_combine: true, empty_selection_is_meaningful: true },
             { name: "Curated", source_type: "curated", retrieval_mode: "browsed",
               categories: [{ slug: "week", label: "This Week" }, { slug: "year", label: "This Year" }],
               categories_combine: false },

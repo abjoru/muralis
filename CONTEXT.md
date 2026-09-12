@@ -48,6 +48,12 @@ _Avoid_: tag (that is a **Preview**'s metadata), collection, section
 **Zero categories**:
 The **Feed Source**'s correct declaration, and a meaningful answer rather than an unfilled one: a feed is a single undifferentiated stream, so *selecting the feed is the selection*. Browsing it takes no category, and naming one is refused. A Browsed Source is therefore not obliged to have categories — publishing none is a statement about its shape, not a gap.
 
+**Meaningful empty selection**:
+A declared property of a **Source** (`empty_selection_is_meaningful`, default `false`), reported by `sources list` alongside **Combinable categories**. It answers a question the presence of categories cannot: whether naming *none* of them is itself a selection the Source serves. A Source with an undifferentiated feed behind its categories declares it and answers the empty selection with everything; one whose categories are the only way in does not, and refuses with the list of them. The **Ultrawide Source** declares it — the **Gallery endpoint** answers an untagged request with the whole catalogue, newest first, which is what the site's own gallery opens on — and its request then carries no `tag` parameter at all rather than an empty one.
+
+Distinct from **Zero categories**, which is about whether a Source *has* categories; this is about what naming none of them means at a Source that does. The two are independent, and conflating them is what left the **Category bar**'s clear button returning to a prompt instead of the feed: a **Consumer** that assumes every categorised Source needs a category can never ask for what this declares.
+_Avoid_: optional category, default category (there is no default — the empty selection is its own selection)
+
 **browse (verb)**:
 The **CLI contract**'s entry point to a **Browsed Source**: `muralis browse <source> [--category <slug>]... [--page] [--per-page] [--aspect]`. `--category` repeats, one category per occurrence — so a value carrying spaces or punctuation needs no delimiter convention and no escaping beyond ordinary shell quoting — and several ask for their intersection at a Source whose **Combinable categories** say they may. It pages and aspect-filters exactly as `search` does and emits the *same JSON result shape*, `is_favorited` included, so every existing consumer of a search result works unchanged against a browse result. One function renders both.
 

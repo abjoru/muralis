@@ -81,10 +81,23 @@ function toggleSelection(published, selection, slug, combines) {
     return canonicalSelection(published, next)
 }
 
-// A categorised browsed source retrieves nothing until a category is named —
-// browsing "everything" is not a slice it offers.
+// Whether naming no category is itself a selection the named source answers,
+// as it declares. A source list that says nothing — an older CLI, a searched
+// source — does not, the same default the trait takes.
+function emptySelectionIsMeaningful(sourceList, name) {
+    var source = find(sourceList, name)
+    return !!(isBrowsed(source) && source.empty_selection_is_meaningful)
+}
+
+// A categorised browsed source retrieves nothing until a category is named,
+// *unless* it declares that naming none is a selection of its own — one with an
+// untagged feed behind its categories answers the empty selection with
+// everything. Which of the two applies is the source's declaration, never its
+// type name: assuming every categorised source needs a category is what left
+// clearing the bar showing a prompt instead of the feed.
 function needsCategory(sourceList, name) {
     return categoriesOf(sourceList, name).length > 0
+        && !emptySelectionIsMeaningful(sourceList, name)
 }
 
 // The CLI argv for one retrieval. Which verb answers follows from the source's
@@ -96,14 +109,17 @@ function args(sourceList, req) {
     var aspect = req.aspect && req.aspect !== "all" ? ["--aspect", req.aspect] : []
 
     if (isBrowsedName(sourceList, req.source)) {
+        // Whether a source *takes* categories and whether it *needs* one are
+        // two questions. A feed publishes none and takes none; a categorised
+        // source takes whatever is selected, and only refuses an empty
+        // selection when it has no feed behind its categories.
+        var slugs = categoriesOf(sourceList, req.source).length > 0 ? (req.categories || []) : []
+        if (slugs.length === 0 && needsCategory(sourceList, req.source)) return null
+
         var category = []
-        if (needsCategory(sourceList, req.source)) {
-            var slugs = req.categories || []
-            if (slugs.length === 0) return null
-            // One occurrence per category: no delimiter convention, so a label
-            // carrying a comma needs nothing escaped.
-            for (var i = 0; i < slugs.length; i++) category.push("--category", slugs[i])
-        }
+        // One occurrence per category: no delimiter convention, so a label
+        // carrying a comma needs nothing escaped.
+        for (var i = 0; i < slugs.length; i++) category.push("--category", slugs[i])
         return ["browse", req.source].concat(category, page, aspect)
     }
 
@@ -179,6 +195,9 @@ function gridMessage(sourceList, state) {
     if (!state.retrieved && selection.length > 0)
         return { text: "Press Enter to browse " + selectionLabel(sourceList, state.source, selection),
                  isError: false }
+    // A browsed source is never searched, so it must never be told to search.
+    if (!state.retrieved && isBrowsedName(sourceList, state.source))
+        return { text: "Browsing " + state.source + "…", isError: false }
     if (!state.retrieved) return { text: "Search for wallpapers to get started", isError: false }
 
     // An intersection matching nothing names the whole selection: which

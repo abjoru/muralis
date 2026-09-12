@@ -153,11 +153,15 @@ struct SearchResult {
     is_favorited: bool,
 }
 
-/// One row of `sources list`. `retrieval_mode`, `categories` and
-/// `categories_combine` are additive: existing fields keep their names and
-/// meanings, so a consumer that only reads `name`/`source_type` is unaffected.
-/// `categories_combine` is what lets a consumer build a single- or
-/// multi-select control without knowing which Source it is rendering.
+/// One row of `sources list`. `retrieval_mode`, `categories`,
+/// `categories_combine` and `empty_selection_is_meaningful` are additive:
+/// existing fields keep their names and meanings, so a consumer that only
+/// reads `name`/`source_type` is unaffected. `categories_combine` is what lets
+/// a consumer build a single- or multi-select control without knowing which
+/// Source it is rendering, and `empty_selection_is_meaningful` is what lets it
+/// know whether clearing that control asks for anything — without it a
+/// **Consumer** must assume every categorised Source needs a category, which
+/// is the assumption this field exists to remove.
 #[derive(Serialize)]
 struct SourceInfo {
     name: String,
@@ -165,6 +169,7 @@ struct SourceInfo {
     retrieval_mode: RetrievalMode,
     categories: Vec<SourceCategory>,
     categories_combine: bool,
+    empty_selection_is_meaningful: bool,
 }
 
 /// Render **Previews** into the `search` JSON shape. `browse` emits the same
@@ -299,6 +304,7 @@ fn source_info(s: &dyn WallpaperSource) -> SourceInfo {
         retrieval_mode: s.retrieval_mode(),
         categories: s.categories(),
         categories_combine: s.categories_combine(),
+        empty_selection_is_meaningful: s.empty_selection_is_meaningful(),
     }
 }
 
@@ -729,6 +735,7 @@ mod tests {
         mode: RetrievalMode,
         categories: Vec<SourceCategory>,
         combines: bool,
+        empty_ok: bool,
     }
 
     impl Stub {
@@ -738,6 +745,7 @@ mod tests {
                 mode: RetrievalMode::Searched,
                 categories: Vec::new(),
                 combines: false,
+                empty_ok: false,
             })
         }
         fn browsed(name: &'static str, slugs: &[&str]) -> Box<dyn WallpaperSource> {
@@ -748,6 +756,14 @@ mod tests {
             slugs: &[&str],
             combines: bool,
         ) -> Box<dyn WallpaperSource> {
+            Self::declaring(name, slugs, combines, false)
+        }
+        fn declaring(
+            name: &'static str,
+            slugs: &[&str],
+            combines: bool,
+            empty_ok: bool,
+        ) -> Box<dyn WallpaperSource> {
             Box::new(Stub {
                 name,
                 mode: RetrievalMode::Browsed,
@@ -756,6 +772,7 @@ mod tests {
                     .map(|s| SourceCategory::new(*s, s.to_uppercase()))
                     .collect(),
                 combines,
+                empty_ok,
             })
         }
     }
@@ -776,6 +793,9 @@ mod tests {
         }
         fn categories_combine(&self) -> bool {
             self.combines
+        }
+        fn empty_selection_is_meaningful(&self) -> bool {
+            self.empty_ok
         }
         async fn search(
             &self,
@@ -926,6 +946,34 @@ mod tests {
         assert_eq!(json[1]["categories_combine"], false, "a feed");
         assert_eq!(json[2]["categories_combine"], false);
         assert_eq!(json[3]["categories_combine"], true);
+    }
+
+    /// Whether naming no category asks for anything is reported too. Without
+    /// it a **Consumer** has to assume every categorised Source needs one, and
+    /// a Source with a feed behind its categories can never be asked for it.
+    #[test]
+    fn sources_list_reports_whether_the_empty_selection_is_meaningful() {
+        let sources = [
+            Stub::searched("Searched"),
+            Stub::browsed("Feed", &[]),
+            Stub::declaring("NeedsOne", &["a", "b"], true, false),
+            Stub::declaring("HasAFeed", &["a", "b"], true, true),
+        ];
+        let json = serde_json::to_value(
+            sources
+                .iter()
+                .map(|s| source_info(s.as_ref()))
+                .collect::<Vec<SourceInfo>>(),
+        )
+        .unwrap();
+
+        assert_eq!(json[0]["empty_selection_is_meaningful"], false, "searched");
+        assert_eq!(json[1]["empty_selection_is_meaningful"], false, "a feed");
+        assert_eq!(json[2]["empty_selection_is_meaningful"], false);
+        assert_eq!(
+            json[3]["empty_selection_is_meaningful"], true,
+            "a categorised Source that answers the empty selection"
+        );
     }
 
     fn preview(id: &str) -> WallpaperPreview {

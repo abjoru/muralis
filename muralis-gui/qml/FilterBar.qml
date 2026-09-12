@@ -87,8 +87,12 @@ Rectangle {
             // A feed publishes no category: selecting it is the selection.
             retrieve()
         } else {
-            // A categorised source retrieves nothing until a category is named.
+            // A categorised source opens its bar. Whether it *also* retrieves
+            // now is the source's declaration, not the presence of categories:
+            // one answering the empty selection shows its untagged feed while
+            // the chips wait, rather than an empty grid and a prompt.
             window.keyboardMode = "BROWSE"
+            if (!Retrieval.needsCategory(window.sourceList, name)) retrieve()
         }
     }
 
