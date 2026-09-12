@@ -8,7 +8,7 @@
 
 ## Status
 
-![Version](https://img.shields.io/badge/version-0.3.0-blue)
+![Version](https://img.shields.io/badge/version-0.4.0-blue)
 ![Status](https://img.shields.io/badge/status-beta-yellow)
 
 **Beta Release** - Core functionality complete and stable. All major features implemented and tested.
