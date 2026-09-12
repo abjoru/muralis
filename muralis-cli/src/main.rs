@@ -272,6 +272,9 @@ fn build_registry(config: &Config) -> Result<(SourceRegistry, reqwest::Client)> 
     for s in muralis_source_feed::create_sources(sources, client.clone(), &ctx) {
         registry.register(s);
     }
+    for s in muralis_source_ultrawide::create_sources(sources, client.clone(), &ctx) {
+        registry.register(s);
+    }
 
     Ok((registry, client))
 }

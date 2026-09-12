@@ -16,6 +16,7 @@ muralis-source-pexels = { path = "../muralis-source-pexels" }
 muralis-source-pixabay = { path = "../muralis-source-pixabay" }
 muralis-source-booru = { path = "../muralis-source-booru" }
 muralis-source-feed = { path = "../muralis-source-feed" }
+muralis-source-ultrawide = { path = "../muralis-source-ultrawide" }
 tokio = { workspace = true }
 anyhow = { workspace = true }
 tracing = { workspace = true }

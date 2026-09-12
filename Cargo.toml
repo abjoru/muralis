@@ -10,6 +10,7 @@ members = [
     "muralis-source-pixabay",
     "muralis-source-booru",
     "muralis-source-feed",
+    "muralis-source-ultrawide",
 ]
 resolver = "2"
 

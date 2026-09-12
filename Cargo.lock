@@ -1620,6 +1620,7 @@ dependencies = [
  "muralis-source-feed",
  "muralis-source-pexels",
  "muralis-source-pixabay",
+ "muralis-source-ultrawide",
  "muralis-source-unsplash",
  "muralis-source-wallhaven",
  "reqwest",
@@ -1741,6 +1742,23 @@ dependencies = [
  "serde_json",
  "tokio",
  "toml",
+]
+
+[[package]]
+name = "muralis-source-ultrawide"
+version = "0.3.0"
+dependencies = [
+ "async-trait",
+ "bytes",
+ "muralis-core",
+ "muralis-source-common",
+ "reqwest",
+ "scraper",
+ "serde",
+ "tokio",
+ "toml",
+ "tracing",
+ "url",
 ]
 
 [[package]]

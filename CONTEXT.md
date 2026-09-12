@@ -63,6 +63,30 @@ A **Booru Source** instance's stable per-host identity (e.g. `yandere`, `konacha
 **Pixabay Source**:
 A one-host **RestSource** (own crate, like wallhaven). Minimal config: `enabled` + `api_key`. `orientation=horizontal` is a constant `extra_query` (landscape server-side, like pexels/unsplash), with **Page-filling** for exact ultrawide. Uniquely, it pushes the global `[filter] min_width/min_height` into its server-side `min_width`/`min_height` params (no other source can). Safe content only ever reaches "moderate" — Pixabay hosts no explicit tier — so the global ceiling maps to `safesearch` true/false.
 
+### Ultrawide
+
+**Ultrawide Source**:
+The **Browsed Source** for ultrawidewallpapers.net (`muralis-source-ultrawide`), and the first Source to publish **Categories**. Emphatically *not* a **RestSource**: the site has no REST/JSON API, no feed and no text search, so there is no paged JSON for a **Source Descriptor** to drive and no query dimension to expose. Its nearest sibling is the **Feed Source** — non-REST, parsing markup, browsed. One `[sources.ultrawide]` subsection, `enabled = false` by default, with an optional `categories` slug list replacing the **Shipped categories**.
+_Avoid_: scraper source, ultrawide plugin (reserve "plugin" for the crate), UWW
+
+**Category page**:
+The only navigational dimension ultrawidewallpapers.net has: one URL per slug, listing a fixed, curated set of cards. There is no pagination, no load-more and no detail page behind a card, so a **Category page** is the whole of what a **Category** can return. Logical `page`/`per_page` walk *that* parsed set and then return empty (the established end-of-results signal); the Source never reaches for a page the site does not publish. It is fetched once per user-initiated selection — never speculatively, never on a timer.
+
+**Card**:
+One entry on a **Category page**: an anchor to the full-resolution **Master** carrying its filename, wrapping the thumbnail `<img>`. Parsing yields one **Preview** per distinct filename (the site repeats a card across its carousel pages). A page yielding *no* card is an error naming the source and the category, never an empty result — an upstream markup change must be diagnosable instead of looking like an empty category.
+
+**Master**:
+The single 7680x2160 (32:9) image the site publishes per wallpaper; every other ratio it shows exists only inside its own server-side crop tool, whose resize endpoint serves whitelisted widths and 403s anything else. **Previews** therefore report 7680x2160 — the Master's *true* dimensions, never the thumbnail tag's `width`/`height`, which describe the thumbnail — and `download()` fetches the Master unaltered, so a kept **Wallpaper** is byte-identical to what the site serves. A user whose aspect filter excludes 32:9 correctly gets nothing here; crop-to-fit would be a Library-wide capability, not something one Source grows in private.
+
+**source_type (ultrawide)**:
+`ultrawide` — its own stable identity, because there are no detail pages and the **Master**'s filename is the natural `source_id`. A bare filename is far too generic to be unique across Sources, so the pair `(ultrawide, aishot-5774.jpg)` is what keys the **Library**. For the same reason `resolve_url()` matches the *host* (exactly: `ultrawidewallpapers.net` or `www.`-prefixed) **before** parsing an id out of a URL, and returns `None` otherwise — a filename-tailed path must not let this Source claim another's URL.
+
+**Shipped categories**:
+The eight-slug default the crate supplies when config names none. The site's sitemap lists ~88 slugs: shipping them all makes an unusable menu and goes stale silently, while scraping the nav at runtime costs a request per session and breaks quietly. Slugs come from config with defaults, so menu length and staleness are the user's call.
+
+**Access posture**:
+Part of the **Ultrawide Source**'s contract, not an optimisation: one page fetch per user action, thumbnails served from the local thumbnail cache rather than re-fetched per render (the Source itself never fetches a thumbnail — it passes the card's URL on), a muralis-identifying `User-Agent` on every outbound request, attribution plus a `source_url` link-back on every **Preview**, and no enumeration beyond what a **Category page** publicly lists. The site's terms restrict automated tools; this integration is a user-initiated renderer producing a browser's request volume, and these constraints are what keep that true as the feature evolves.
+
 ### Content safety
 
 **Content Safety policy**:

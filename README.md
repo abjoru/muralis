@@ -17,7 +17,7 @@
 
 ## Features
 
-- **Multi-Source Search**: Wallhaven, Unsplash, Pexels, Pixabay, imageboards (danbooru/moebooru/gelbooru), and RSS/Atom feeds
+- **Multi-Source Search**: Wallhaven, Unsplash, Pexels, Pixabay, imageboards (danbooru/moebooru/gelbooru), RSS/Atom feeds, and browsed sources like ultrawidewallpapers.net
 - **Plugin Architecture**: Add new sources by implementing a single trait
 - **Display Modes**: Static, Random, Sequential, Workspace-aware, Scheduled
 - **Favorites System**: SHA-256 deduplication, SQLite metadata, persistent library
@@ -278,6 +278,27 @@ url = "https://www.reddit.com/r/ImaginaryLandscapes/.rss"
 # url = "https://www.reddit.com/r/ultrawidemasterrace/.rss"
 ```
 
+#### Ultrawide Wallpapers (browsed)
+
+[ultrawidewallpapers.net](https://www.ultrawidewallpapers.net/) has no API and no
+search — only category pages. It is therefore a *browsed* source: no query, no
+search field, reached by category.
+
+```toml
+[sources.ultrawide]
+enabled = true
+# Omit `categories` for the shipped default set:
+# categories = ["32-9-wallpapers", "dark-ultrawide-wallpapers", "space-wallpapers"]
+```
+
+```bash
+muralis sources list                                            # slugs it publishes
+muralis browse "Ultrawide Wallpapers" --category 32-9-wallpapers
+```
+
+> Every image is a **7680x2160 (32:9) master**, downloaded unaltered — muralis
+> never crops or resizes. `--aspect 21x9` will correctly return nothing.
+
 See [`assets/demo-config.toml`](assets/demo-config.toml) for a fully annotated
 example covering every source plus the Reddit-as-feed recipes (ultrawide + NSFW).
 
@@ -319,7 +340,8 @@ muralis/
 ├── muralis-source-pexels/     # Pexels API plugin
 ├── muralis-source-pixabay/    # Pixabay API plugin
 ├── muralis-source-booru/      # Multi-host imageboard plugin (danbooru/moebooru/gelbooru)
-└── muralis-source-feed/       # RSS/Atom feed plugin
+├── muralis-source-feed/       # RSS/Atom feed plugin
+└── muralis-source-ultrawide/  # ultrawidewallpapers.net browsed plugin (HTML)
 ```
 
 ### Adding a New Source
