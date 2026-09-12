@@ -91,6 +91,7 @@ muralis favorites add <url> # Keep a wallpaper from a pasted link
 muralis favorites keep      # Keep a search/browse result (JSON on stdin or as an argument)
 muralis cache stats         # Show cache size
 muralis cache prune         # Prune cache to configured max
+muralis cache clear         # Drop browsing residue, keep Library thumbnails
 muralis quit                # Stop daemon
 ```
 
@@ -107,7 +108,8 @@ The GUI provides:
   category loads its first page (a feed publishes none — selecting it loads)
 - Thumbnail grid with adaptive columns, cached to `~/.cache/muralis/thumbnails`
   so a thumbnail is fetched once and survives a restart (`cache stats` counts
-  them, `cache prune` trims them)
+  them separately from the Library's, `cache clear` drops them, `cache prune`
+  sheds them before any Library thumbnail)
 - Preview drawer with metadata and actions
 - One-click favoriting (downloads full image, deduplicates by SHA-256)
 - Keyboard-driven navigation (search/browse/grid/preview modes)
@@ -375,7 +377,6 @@ NSFW-capable output to the ceiling and apply the minimum dimensions.
 | Database | `~/.local/share/muralis/muralis.db` |
 | Wallpapers | `~/.local/share/muralis/wallpapers/` |
 | Thumbnails | `~/.cache/muralis/thumbnails/` |
-| Previews | `~/.cache/muralis/previews/` |
 | IPC socket | `/tmp/muralis-{uid}.sock` |
 
 ## Hyprland Integration

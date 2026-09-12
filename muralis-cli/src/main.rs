@@ -103,6 +103,8 @@ enum CacheAction {
     Stats,
     /// Prune cache to configured max size
     Prune,
+    /// Drop browsing residue: every Preview thumbnail, keeping the Library's
+    Clear,
 }
 
 #[derive(Subcommand)]
@@ -598,16 +600,20 @@ async fn main() -> Result<()> {
                 CacheAction::Stats => {
                     let stats = muralis_core::cache::cache_stats(&paths);
                     println!(
-                        "thumbnails: {} ({} files)",
-                        format_bytes(stats.thumbnails_size),
-                        stats.thumbnail_count
+                        "disposable: {} ({} preview thumbnails)",
+                        format_bytes(stats.disposable_size),
+                        stats.disposable_count
                     );
                     println!(
-                        "previews:   {} ({} files)",
-                        format_bytes(stats.previews_size),
-                        stats.preview_count
+                        "library:    {} ({} kept wallpaper thumbnails)",
+                        format_bytes(stats.library_size),
+                        stats.library_count
                     );
-                    println!("total:      {}", format_bytes(stats.total_size));
+                    println!(
+                        "total:      {} ({} files)",
+                        format_bytes(stats.total_size),
+                        stats.total_count
+                    );
                 }
                 CacheAction::Prune => {
                     let config = Config::load(&paths)?;
@@ -618,6 +624,10 @@ async fn main() -> Result<()> {
                     } else {
                         println!("cache within limit");
                     }
+                }
+                CacheAction::Clear => {
+                    let freed = muralis_core::cache::clear_disposable(&paths)?;
+                    println!("cleared {}", format_bytes(freed));
                 }
             }
         }

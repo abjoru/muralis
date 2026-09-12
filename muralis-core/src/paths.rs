@@ -46,10 +46,6 @@ impl MuralisPaths {
         self.cache_dir.join("thumbnails")
     }
 
-    pub fn previews_dir(&self) -> PathBuf {
-        self.cache_dir.join("previews")
-    }
-
     pub fn socket_path() -> PathBuf {
         let uid = unsafe { libc::getuid() };
         PathBuf::from(format!("/tmp/muralis-{uid}.sock"))
@@ -62,7 +58,6 @@ impl MuralisPaths {
             &self.cache_dir,
             &self.wallpapers_dir(),
             &self.thumbnails_dir(),
-            &self.previews_dir(),
         ] {
             std::fs::create_dir_all(dir)?;
         }

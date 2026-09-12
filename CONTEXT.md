@@ -177,6 +177,29 @@ from the **Library** thumbnails the daemon writes for kept **Wallpapers**
 but never cached: large, and looked at once.
 _Avoid_: image cache (Qt's own per-process one is what this replaces)
 
+**Cache populations**:
+`~/.cache/muralis/thumbnails` holds two kinds of file with opposite lifetimes,
+told apart by the `_thumb` suffix: a **Library** thumbnail (`<id>_thumb.jpg`,
+one per Library row, as old as the wallpaper, regenerated only by re-keeping
+it) and a **Preview** thumbnail (a digest of the remote URL, no suffix,
+refetched on the next view if lost). The suffix is the whole distinction, so it
+is a contract rather than an incidental naming habit — `ThumbnailKind` names it
+once and eviction reads it. Eviction sheds the disposable population *first*,
+entirely, before considering any Library thumbnail, and only then falls back to
+oldest-first within a population: the Library's thumbnails are precisely the old
+ones, so a plain oldest-first pass over the mixed directory discards the
+Library's own thumbnails to keep a throwaway preview of an image glanced at once
+— the order inverted with respect to the value of the data. `muralis cache
+clear` drops the disposable population outright, ungated by the size ceiling,
+which is otherwise unreachable at a default of 500 MB against a cache measured
+in hundreds of kilobytes. `muralis cache stats` reports the two splits so both
+operations are legible before use. A separate previews directory was retired: it
+was consulted first by eviction on the reasoning that previews matter less, but
+nothing ever wrote it, so that branch could only ever free zero bytes while the
+whole of the pressure landed on the mixed directory. Wallpaper files are never
+touched by any of this.
+_Avoid_: cache tiers, temp files
+
 ### Display
 
 **Backend**:
