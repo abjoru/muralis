@@ -9,7 +9,12 @@
 //! ```
 //!
 //! Exit code is the answer — `0` parsed, `1` drifted, `2` transient — so the
-//! workflow can file an issue for drift alone without reading prose.
+//! workflow can file an issue for drift alone without reading prose. The
+//! report names which usability check failed: `cards-present`,
+//! `fields-usable`, `card-count` or `urls-resolve`.
+//!
+//! One category-page fetch, plus two one-byte verification requests per
+//! sampled card. Nothing here is a crawl.
 
 use muralis_source_common::ReqwestFetch;
 use muralis_source_ultrawide::check_live_category;

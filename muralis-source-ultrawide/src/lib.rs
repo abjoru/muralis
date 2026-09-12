@@ -27,7 +27,9 @@ use muralis_source_common::{HttpFetch, ReqwestFetch};
 
 pub mod drift;
 
-pub use drift::{check_live_category, DriftCheck};
+pub use drift::{
+    check_live_category, check_live_category_with, DriftCheck, DriftFailure, DriftLimits,
+};
 
 /// Stable identity for this host, so its filename-shaped `source_id`s cannot
 /// collide with another Source's ids.

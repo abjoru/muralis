@@ -4,8 +4,15 @@
 #
 # Deliberately NOT part of CI: it reaches the network, so it never runs on push
 # or pull request, and `cargo test --workspace` stays offline and deterministic.
-# One page fetch per run, weekly, identifying muralis — the Access posture the
-# Source keeps at runtime applies to its monitoring too.
+# One page fetch per run plus four one-byte verification requests, weekly, all
+# identifying muralis — the Access posture the Source keeps at runtime applies
+# to its monitoring too.
+#
+# "Did anything parse?" is not the question it asks. The Source once shipped
+# reading `src` on a page that lazy-loads, and every Preview it produced carried
+# a 1x1 placeholder: a full complement of cards, none of them usable. So the
+# check asks whether what parsed is usable, and its report names which of those
+# questions failed — cards-present, fields-usable, card-count, urls-resolve.
 name: Ultrawide drift check
 
 on:
@@ -46,7 +53,7 @@ jobs:
         # its exit code is the check's own.
         run: cargo build --quiet -p muralis-source-ultrawide --example drift-check
 
-      - name: Fetch one category page and run the production parser over it
+      - name: Fetch one category page and ask whether the production parser still yields usable cards
         id: check
         run: |
           set +e
@@ -62,9 +69,10 @@ jobs:
           } >> "$GITHUB_OUTPUT"
           echo "$report" >> "$GITHUB_STEP_SUMMARY"
 
-      # Drift, and only drift, is filed: a page arrived intact and the parser
-      # found no card. Refreshing the fixture stays a human decision — a new
-      # capture is a new parser contract — so nothing here commits anything.
+      # Drift, and only drift, is filed: a page arrived intact and what the
+      # parser made of it is not usable. Refreshing the fixture stays a human
+      # decision — a new capture is a new parser contract — so nothing here
+      # commits anything.
       - name: File the drift where a maintainer will see it
         if: steps.check.outputs.code == '1'
         env:
@@ -72,7 +80,7 @@ jobs:
           REPORT: ${{ steps.check.outputs.report }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
-          title="Ultrawide Source: the live '$CATEGORY' page no longer parses"
+          title="Ultrawide Source: the live '$CATEGORY' page no longer yields usable cards"
           body=$(printf '%s\n\n---\nFound by the weekly drift check: %s\n\nRefreshing the fixture is a human decision — a new capture is a new parser contract.\n' "$REPORT" "$RUN_URL")
           existing=$(gh issue list --state open --search "in:title $title" \
             --json number,title --jq "map(select(.title == \"$title\")) | .[0].number // empty")
@@ -83,8 +91,9 @@ jobs:
           fi
           exit 1
 
-      # A timeout, a 5xx or a rate limit says nothing about the markup. Visible
-      # as a failed run, but never filed and never called drift.
+      # A timeout, a 5xx or a rate limit — on the page or on a verification
+      # request — says nothing about the markup. Visible as a failed run, but
+      # never filed and never called drift.
       - name: Report a transient failure without calling it drift
         if: steps.check.outputs.code == '2'
         env:
