@@ -14,14 +14,18 @@ Rectangle {
     property string activeSource: "All"
     property int currentPage: 1
     property string activeAspect: "all"
-    property string activeCategory: ""
+    // The categories currently selected, as slugs in the source's published
+    // order. A set, not one slug: where a source's categories combine, the
+    // intersection is the slice.
+    property var selectedCategories: []
 
     // Sources split on their declared retrieval mode, reported by `sources
     // list` — never on a source-type name.
     readonly property var searchedSources: Retrieval.searched(window.sourceList)
     readonly property var browsedSources: Retrieval.browsed(window.sourceList)
     readonly property bool isBrowsedSource: Retrieval.isBrowsedName(window.sourceList, activeSource)
-    readonly property var activeCategories: Retrieval.categoriesOf(window.sourceList, activeSource)
+    readonly property var publishedCategories: Retrieval.categoriesOf(window.sourceList, activeSource)
+    readonly property bool categoriesCombine: Retrieval.categoriesCombine(window.sourceList, activeSource)
 
     // A browsed source has no query dimension, so it is offered none.
     readonly property bool queryVisible: !isBrowsedSource
@@ -38,7 +42,7 @@ Rectangle {
         window.retrieve({
             source: activeSource,
             query: searchField.text,
-            category: activeCategory,
+            categories: selectedCategories,
             page: currentPage,
             perPage: 24,
             aspect: activeAspect
@@ -67,8 +71,9 @@ Rectangle {
     }
 
     function selectSource(name) {
+        settle.stop()
         activeSource = name
-        activeCategory = ""
+        selectedCategories = []
         currentPage = 1
 
         if (!isBrowsedSource) {
@@ -78,7 +83,7 @@ Rectangle {
         }
 
         window.clearResults()
-        if (activeCategories.length === 0) {
+        if (publishedCategories.length === 0) {
             // A feed publishes no category: selecting it is the selection.
             retrieve()
         } else {
@@ -87,11 +92,34 @@ Rectangle {
         }
     }
 
-    function selectCategory(slug) {
-        activeCategory = slug
+    // Picking one category. The selection moves at once — the chips follow the
+    // click — while the retrieval waits for it to stop moving, so a handful of
+    // chips picked in succession costs one request for the final selection.
+    function pickCategory(slug, settleAfter) {
+        selectedCategories = Retrieval.toggleSelection(publishedCategories, selectedCategories,
+                                                       slug, categoriesCombine)
+        currentPage = 1
+        if (settleAfter) settle.restart()
+        else settle.stop()
+    }
+
+    function clearCategories() {
+        selectedCategories = []
+        currentPage = 1
+        settle.restart()
+    }
+
+    // Retrieve the selection as it stands, without waiting for it to settle.
+    function commitCategories() {
+        settle.stop()
         currentPage = 1
         retrieve()
-        window.keyboardMode = "GRID"
+    }
+
+    Timer {
+        id: settle
+        interval: Retrieval.SETTLE_MS
+        onTriggered: root.retrieve()
     }
 
     RowLayout {

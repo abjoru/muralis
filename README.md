@@ -105,7 +105,10 @@ muralis-gui --query "landscape"      # Launch with initial search
 The GUI provides:
 - Source chips for searched sources, a dropdown for browsed ones
 - A category bar for a browsed source that publishes categories; selecting a
-  category loads its first page (a feed publishes none — selecting it loads)
+  category loads its first page (a feed publishes none — selecting it loads).
+  Where the source declares its categories combine, the chips toggle and several
+  ask for their intersection — `Space` toggles, `Enter` loads, `x` clears, and a
+  burst of picks costs one request for the final selection
 - Thumbnail grid with adaptive columns, cached to `~/.cache/muralis/thumbnails`
   so a thumbnail is fetched once and survives a restart (`cache stats` counts
   them separately from the Library's, `cache clear` drops them, `cache prune`

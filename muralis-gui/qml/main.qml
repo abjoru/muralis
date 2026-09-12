@@ -224,7 +224,13 @@ ApplicationWindow {
     // the selected source's declared retrieval mode.
     function retrieve(req) {
         var args = Retrieval.args(sourceList, req)
-        if (!args) return
+        // Nothing to ask for — a categorised browsed source with an empty
+        // selection. Clearing the selection lands here, and the grid must go
+        // back to prompting rather than keep the last combination's results.
+        if (!args) {
+            clearResults()
+            return
+        }
 
         loading = true
         hasRetrieved = true
@@ -259,10 +265,13 @@ ApplicationWindow {
         CategoryBar {
             id: categoryBar
             Layout.fillWidth: true
-            visible: filterBar.isBrowsedSource && filterBar.activeCategories.length > 0
-            categories: filterBar.activeCategories
-            activeCategory: filterBar.activeCategory
-            onSelected: function(slug) { filterBar.selectCategory(slug) }
+            visible: filterBar.isBrowsedSource && filterBar.publishedCategories.length > 0
+            categories: filterBar.publishedCategories
+            selection: filterBar.selectedCategories
+            combines: filterBar.categoriesCombine
+            onPicked: function(slug, settle) { filterBar.pickCategory(slug, settle) }
+            onCleared: filterBar.clearCategories()
+            onCommitted: filterBar.commitCategories()
         }
 
         SearchView {

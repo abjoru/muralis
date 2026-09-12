@@ -26,7 +26,7 @@ TestCase {
         var sources = fixture()
 
         compare(Retrieval.categoriesOf(sources, "Ultrawide").map(function (c) { return c.slug }),
-                ["space", "nature"])
+                ["space", "nature", "dark"])
         compare(Retrieval.categoriesOf(sources, "Bing Daily"), [])
         compare(Retrieval.categoriesOf(sources, "Wallhaven"), [])
         compare(Retrieval.categoriesOf(sources, "All"), [])
@@ -55,34 +55,115 @@ TestCase {
     function test_a_browsed_source_is_asked_with_the_browse_verb() {
         var sources = fixture()
 
-        compare(Retrieval.args(sources, { source: "Ultrawide", category: "space", page: 1, perPage: 24, aspect: "all" }),
+        compare(Retrieval.args(sources, { source: "Ultrawide", categories: ["space"], page: 1, perPage: 24, aspect: "all" }),
                 ["browse", "Ultrawide", "--category", "space", "--page", "1", "--per-page", "24"])
 
         // A feed takes no category: selecting the feed is the selection.
-        compare(Retrieval.args(sources, { source: "Bing Daily", category: "", page: 1, perPage: 24, aspect: "all" }),
+        compare(Retrieval.args(sources, { source: "Bing Daily", categories: [], page: 1, perPage: 24, aspect: "all" }),
                 ["browse", "Bing Daily", "--page", "1", "--per-page", "24"])
 
         // Paging stays inside the selected category.
-        compare(Retrieval.args(sources, { source: "Ultrawide", category: "nature", page: 3, perPage: 24, aspect: "all" }),
+        compare(Retrieval.args(sources, { source: "Ultrawide", categories: ["nature"], page: 3, perPage: 24, aspect: "all" }),
                 ["browse", "Ultrawide", "--category", "nature", "--page", "3", "--per-page", "24"])
+    }
+
+    // A combined selection is one request naming every category: the option
+    // repeats, one value per occurrence, so no label needs a delimiter escaped.
+    function test_a_combined_selection_repeats_the_option() {
+        compare(Retrieval.args(fixture(), { source: "Ultrawide", categories: ["space", "dark"],
+                                            page: 1, perPage: 24, aspect: "all" }),
+                ["browse", "Ultrawide", "--category", "space", "--category", "dark",
+                 "--page", "1", "--per-page", "24"])
     }
 
     // A categorised browsed source with nothing selected yet is not a request
     // the CLI can answer, so none is issued.
     function test_a_categorised_source_without_a_category_issues_nothing() {
         compare(Retrieval.args(fixture(),
-                               { source: "Ultrawide", category: "", page: 1, perPage: 24, aspect: "all" }),
+                               { source: "Ultrawide", categories: [], page: 1, perPage: 24, aspect: "all" }),
                 null)
+        // Clearing a selection lands here too, by the same route.
+        compare(Retrieval.args(fixture(),
+                               { source: "Ultrawide", page: 1, perPage: 24, aspect: "all" }),
+                null)
+    }
+
+    // Whether picking adds to a selection or replaces it is the Source's
+    // declaration, never an assumption about its type.
+    function test_whether_categories_combine_is_read_from_the_source() {
+        var sources = fixture()
+
+        verify(Retrieval.categoriesCombine(sources, "Ultrawide"))
+        verify(!Retrieval.categoriesCombine(sources, "Curated"))
+        verify(!Retrieval.categoriesCombine(sources, "Bing Daily"))
+        verify(!Retrieval.categoriesCombine(sources, "Wallhaven"))
+        verify(!Retrieval.categoriesCombine(sources, "All"))
+        // A source list from a CLI that predates the field declares nothing.
+        verify(!Retrieval.categoriesCombine([{ name: "Old", retrieval_mode: "browsed",
+                                               categories: [{ slug: "a" }] }], "Old"))
+    }
+
+    // Where categories combine, picking toggles: picking again removes.
+    function test_picking_toggles_where_categories_combine() {
+        var published = Retrieval.categoriesOf(fixture(), "Ultrawide")
+
+        var one = Retrieval.toggleSelection(published, [], "space", true)
+        compare(one, ["space"])
+
+        var two = Retrieval.toggleSelection(published, one, "dark", true)
+        compare(two, ["space", "dark"])
+
+        compare(Retrieval.toggleSelection(published, two, "space", true), ["dark"])
+        compare(Retrieval.toggleSelection(published, ["dark"], "dark", true), [])
+    }
+
+    // Where they do not, picking replaces — exactly as the bar behaved before
+    // any of this, one selection at a time.
+    function test_picking_replaces_where_categories_do_not_combine() {
+        var published = Retrieval.categoriesOf(fixture(), "Curated")
+
+        compare(Retrieval.toggleSelection(published, [], "week", false), ["week"])
+        compare(Retrieval.toggleSelection(published, ["week"], "year", false), ["year"])
+        // Picking the loaded one again reloads it rather than emptying the bar.
+        compare(Retrieval.toggleSelection(published, ["week"], "week", false), ["week"])
+    }
+
+    // The same set picked in either order is one selection — and so one
+    // request and one cache entry, matching what the CLI canonicalises to.
+    function test_a_selection_is_canonicalised_to_the_published_order() {
+        var published = Retrieval.categoriesOf(fixture(), "Ultrawide")
+
+        var forwards = Retrieval.toggleSelection(
+            published, Retrieval.toggleSelection(published, [], "space", true), "dark", true)
+        var backwards = Retrieval.toggleSelection(
+            published, Retrieval.toggleSelection(published, [], "dark", true), "space", true)
+
+        compare(forwards, backwards)
+        compare(forwards, ["space", "dark"])
+
+        // Anything the source does not publish is not part of a selection.
+        compare(Retrieval.canonicalSelection(published, ["dark", "volcanoes", "space"]),
+                ["space", "dark"])
+    }
+
+    // The selection is nameable for a human, in the published order.
+    function test_the_selection_names_itself_by_label() {
+        var sources = fixture()
+
+        compare(Retrieval.selectionLabel(sources, "Ultrawide", ["space", "dark"]), "Space, Dark")
+        compare(Retrieval.selectionLabel(sources, "Ultrawide", []), "")
+        // An unlabelled category is still nameable.
+        compare(Retrieval.selectionLabel(sources, "Ultrawide", ["unknown"]), "unknown")
     }
 
     // Loading, empty and failed are three distinguishable states, and an empty
     // category says which category was empty.
     function test_the_grid_message_distinguishes_loading_empty_and_failed() {
         var sources = fixture()
-        var browsing = { source: "Ultrawide", category: "space", retrieved: true, resultCount: 0 }
+        var browsing = { source: "Ultrawide", categories: ["space"], retrieved: true, resultCount: 0 }
 
         // Loading owns the grid; no message competes with the indicator.
-        var loading = Retrieval.gridMessage(sources, { source: "Ultrawide", category: "space",
+        var loading = Retrieval.gridMessage(sources, { source: "Ultrawide", categories: ["space"],
                                                        loading: true, retrieved: true, resultCount: 0 })
         compare(loading.text, "")
 
@@ -90,25 +171,51 @@ TestCase {
         verify(empty.text.indexOf("Space") >= 0, "empty state names the category: " + empty.text)
         verify(!empty.isError)
 
-        var failed = Retrieval.gridMessage(sources, { source: "Ultrawide", category: "space",
+        var failed = Retrieval.gridMessage(sources, { source: "Ultrawide", categories: ["space"],
                                                       retrieved: true, resultCount: 0,
                                                       error: "no cards parsed on ultrawide/space" })
         verify(failed.isError)
         verify(failed.text.indexOf("no cards parsed") >= 0, failed.text)
 
         // Results on screen need no message at all.
-        compare(Retrieval.gridMessage(sources, { source: "Ultrawide", category: "space",
+        compare(Retrieval.gridMessage(sources, { source: "Ultrawide", categories: ["space"],
                                                  retrieved: true, resultCount: 24 }).text, "")
+    }
+
+    // An intersection matching nothing is the case a combining source hits
+    // most: the empty state names the whole selection, not one of its parts,
+    // and stays distinct from a failure.
+    function test_an_empty_combination_names_every_category_in_it() {
+        var sources = fixture()
+
+        var empty = Retrieval.gridMessage(sources, { source: "Ultrawide", categories: ["space", "dark"],
+                                                     retrieved: true, resultCount: 0 })
+        verify(empty.text.indexOf("Space") >= 0, empty.text)
+        verify(empty.text.indexOf("Dark") >= 0, empty.text)
+        verify(!empty.isError)
+
+        var failed = Retrieval.gridMessage(sources, { source: "Ultrawide", categories: ["space", "dark"],
+                                                      retrieved: true, resultCount: 0,
+                                                      error: "ultrawide returned 503" })
+        verify(failed.isError)
+        verify(failed.text !== empty.text, "a failure does not read as an empty intersection")
     }
 
     // Picking a categorised source is not yet a retrieval; the grid says what
     // is missing instead of looking like an empty result.
     function test_a_categorised_source_awaiting_a_category_says_so() {
-        var msg = Retrieval.gridMessage(fixture(), { source: "Ultrawide", category: "", retrieved: false,
+        var msg = Retrieval.gridMessage(fixture(), { source: "Ultrawide", categories: [], retrieved: false,
                                                      resultCount: 0 })
         verify(msg.text.indexOf("categor") >= 0, msg.text)
         verify(msg.text.indexOf("Ultrawide") >= 0, msg.text)
         verify(!msg.isError)
+
+        // Clearing a selection returns the grid to that same prompt rather
+        // than to an empty result.
+        var cleared = Retrieval.gridMessage(fixture(), { source: "Ultrawide", categories: [],
+                                                         retrieved: true, resultCount: 0 })
+        compare(cleared.text, msg.text)
+        verify(!cleared.isError)
     }
 
     // Keeping hands the whole result over, browsed and searched alike: a
@@ -248,11 +355,99 @@ TestCase {
         p.destroy()
     }
 
+    // Ultrawide's categories are the site's tags and intersect, so they
+    // combine; Curated's are mutually exclusive editorial pages and do not.
+    // A selection built from the keyboard exists before it is retrieved —
+    // toggling is deliberately not committing. The grid says what is waiting to
+    // load rather than falling back to the message a searched source shows.
+    function test_a_selection_built_but_not_yet_retrieved_says_what_will_load() {
+        var msg = Retrieval.gridMessage(fixture(), { source: "Ultrawide", categories: ["space", "dark"],
+                                                     retrieved: false, resultCount: 0 })
+        verify(msg.text.indexOf("Space") >= 0, msg.text)
+        verify(msg.text.indexOf("Dark") >= 0, msg.text)
+        verify(msg.text.indexOf("wallpapers to get started") < 0,
+               "a browsed source never shows the search prompt: " + msg.text)
+        verify(!msg.isError)
+    }
+
+    // The bar's settling timer, wired the way CategoryBar.qml wires it: each
+    // pick updates the selection at once (the chips must follow the click) and
+    // restarts the timer, so a burst of picks costs one retrieval for the
+    // final selection rather than one per pick.
+    Component {
+        id: settling
+        QtObject {
+            property var sources: []
+            property string source: ""
+            property var selection: []
+            property var issued: []
+
+            readonly property var published: Retrieval.categoriesOf(sources, source)
+            readonly property bool combines: Retrieval.categoriesCombine(sources, source)
+
+            property Timer settle: Timer {
+                interval: Retrieval.SETTLE_MS
+                onTriggered: fire()
+            }
+
+            function pick(slug) {
+                selection = Retrieval.toggleSelection(published, selection, slug, combines)
+                settle.restart()
+            }
+
+            function commit() {
+                settle.stop()
+                fire()
+            }
+
+            function fire() {
+                var argv = Retrieval.args(sources, { source: source, categories: selection,
+                                                     page: 1, perPage: 24, aspect: "all" })
+                if (argv) issued.push(argv)
+            }
+        }
+    }
+
+    function test_a_burst_of_picks_costs_one_retrieval_for_the_final_selection() {
+        var bar = settling.createObject(null, { sources: fixture(), source: "Ultrawide" })
+
+        bar.pick("space")
+        bar.pick("dark")
+        bar.pick("nature")
+        compare(bar.issued.length, 0, "nothing fires while the selection is still moving")
+        compare(bar.selection, ["space", "nature", "dark"], "the chips follow every pick at once")
+
+        tryCompare(bar, "issued", [["browse", "Ultrawide", "--category", "space",
+                                    "--category", "nature", "--category", "dark",
+                                    "--page", "1", "--per-page", "24"]])
+        bar.destroy()
+    }
+
+    // Committing is distinguishable from toggling: it fires the selection
+    // built so far without waiting, and a pending settle does not then fire a
+    // second, identical request.
+    function test_committing_fires_once_and_cancels_the_settle() {
+        var bar = settling.createObject(null, { sources: fixture(), source: "Ultrawide" })
+
+        bar.pick("space")
+        bar.commit()
+        compare(bar.issued.length, 1)
+
+        wait(Retrieval.SETTLE_MS * 2)
+        compare(bar.issued.length, 1, "the cancelled settle does not fire again")
+        bar.destroy()
+    }
+
     function fixture() {
         return [
             { name: "Wallhaven", source_type: "wallhaven", retrieval_mode: "searched", categories: [] },
             { name: "Ultrawide", source_type: "ultrawide", retrieval_mode: "browsed",
-              categories: [{ slug: "space", label: "Space" }, { slug: "nature", label: "Nature" }] },
+              categories: [{ slug: "space", label: "Space" }, { slug: "nature", label: "Nature" },
+                           { slug: "dark", label: "Dark" }],
+              categories_combine: true },
+            { name: "Curated", source_type: "curated", retrieval_mode: "browsed",
+              categories: [{ slug: "week", label: "This Week" }, { slug: "year", label: "This Year" }],
+              categories_combine: false },
             { name: "Bing Daily", source_type: "feed", retrieval_mode: "browsed", categories: [] }
         ]
     }

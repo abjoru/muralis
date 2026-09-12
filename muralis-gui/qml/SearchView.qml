@@ -13,7 +13,7 @@ Item {
 
     readonly property var message: Retrieval.gridMessage(window.sourceList, {
         source: filterBar.activeSource,
-        category: filterBar.activeCategory,
+        categories: filterBar.selectedCategories,
         loading: window.loading,
         retrieved: window.hasRetrieved,
         resultCount: window.searchResults.length,

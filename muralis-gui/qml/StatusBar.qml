@@ -98,7 +98,9 @@ Rectangle {
                 case "SEARCH":
                     return "Enter:search  Tab:grid  Esc:clear"
                 case "BROWSE":
-                    return "h/l:category  Enter:load  Esc:grid  q:quit"
+                    return (filterBar.categoriesCombine
+                            ? "h/l:category  Space:toggle  Enter:load  x:clear  Esc:grid  q:quit"
+                            : "h/l:category  Enter:load  Esc:grid  q:quit")
                 case "GRID":
                     return (categoryBar.visible ? "c:categories  " : "")
                         + "hjkl:nav  Enter:preview  f:fav  PgDn/PgUp:page"

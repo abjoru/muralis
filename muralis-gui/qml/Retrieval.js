@@ -8,6 +8,11 @@
 // searched, matching the trait default.
 var BROWSED = "browsed"
 
+// How long the bar lets a selection settle before retrieving it. Several chips
+// clicked in succession are one intent, and one request — the last selection
+// is what must be reflected, not each step towards it.
+var SETTLE_MS = 250
+
 function isBrowsed(source) {
     return !!source && source.retrieval_mode === BROWSED
 }
@@ -44,6 +49,38 @@ function isBrowsedName(sourceList, name) {
     return isBrowsed(find(sourceList, name))
 }
 
+// Whether the named source's categories combine, as it declares. A source list
+// that says nothing — an older CLI, a searched source — does not combine, the
+// same default the trait takes.
+function categoriesCombine(sourceList, name) {
+    var source = find(sourceList, name)
+    return !!(isBrowsed(source) && source.categories_combine)
+}
+
+// A selection reduced to what the source publishes, in the order it publishes
+// it: duplicates collapse and anything unpublished drops. The same set picked
+// either way round is then one selection, one request and one cache entry —
+// matching what `select_categories` canonicalises to on the other side.
+function canonicalSelection(published, slugs) {
+    var out = []
+    for (var i = 0; i < (published || []).length; i++)
+        if ((slugs || []).indexOf(published[i].slug) >= 0) out.push(published[i].slug)
+    return out
+}
+
+// The selection after picking one chip. Where the source's categories combine,
+// picking toggles; where they do not, picking replaces — exactly the one-at-a
+// time bar as it was. Which of the two applies is the source's declaration.
+function toggleSelection(published, selection, slug, combines) {
+    if (!combines) return [slug]
+
+    var next = (selection || []).slice()
+    var at = next.indexOf(slug)
+    if (at >= 0) next.splice(at, 1)
+    else next.push(slug)
+    return canonicalSelection(published, next)
+}
+
 // A categorised browsed source retrieves nothing until a category is named —
 // browsing "everything" is not a slice it offers.
 function needsCategory(sourceList, name) {
@@ -61,8 +98,11 @@ function args(sourceList, req) {
     if (isBrowsedName(sourceList, req.source)) {
         var category = []
         if (needsCategory(sourceList, req.source)) {
-            if (!req.category) return null
-            category = ["--category", req.category]
+            var slugs = req.categories || []
+            if (slugs.length === 0) return null
+            // One occurrence per category: no delimiter convention, so a label
+            // carrying a comma needs nothing escaped.
+            for (var i = 0; i < slugs.length; i++) category.push("--category", slugs[i])
         }
         return ["browse", req.source].concat(category, page, aspect)
     }
@@ -112,6 +152,14 @@ function labelOf(sourceList, sourceName, slug) {
     return slug
 }
 
+// A whole selection named for a human, in the order the chips read.
+function selectionLabel(sourceList, sourceName, slugs) {
+    var out = []
+    for (var i = 0; i < (slugs || []).length; i++)
+        out.push(labelOf(sourceList, sourceName, slugs[i]))
+    return out.join(", ")
+}
+
 // What the grid shows when it is not showing wallpapers. Loading, awaiting a
 // category, empty and failed are four distinct states: an empty category names
 // itself, and a failed retrieval says so rather than passing for an empty one.
@@ -119,14 +167,24 @@ function gridMessage(sourceList, state) {
     if (state.loading) return { text: "", isError: false }
     if (state.error) return { text: state.error, isError: true }
 
-    if (needsCategory(sourceList, state.source) && !state.category)
+    var selection = state.categories || []
+    if (needsCategory(sourceList, state.source) && selection.length === 0)
         return { text: "Select a category to browse " + state.source, isError: false }
 
     if (state.resultCount > 0) return { text: "", isError: false }
+
+    // A selection built from the keyboard exists before it is retrieved:
+    // toggling is deliberately not committing, so the grid says what is waiting
+    // rather than falling back to the prompt a searched source shows.
+    if (!state.retrieved && selection.length > 0)
+        return { text: "Press Enter to browse " + selectionLabel(sourceList, state.source, selection),
+                 isError: false }
     if (!state.retrieved) return { text: "Search for wallpapers to get started", isError: false }
 
-    if (state.category)
-        return { text: "No wallpapers in " + labelOf(sourceList, state.source, state.category),
+    // An intersection matching nothing names the whole selection: which
+    // combination was empty is the only useful thing to say about it.
+    if (selection.length > 0)
+        return { text: "No wallpapers in " + selectionLabel(sourceList, state.source, selection),
                  isError: false }
     if (isBrowsedName(sourceList, state.source))
         return { text: "Nothing to show from " + state.source, isError: false }
