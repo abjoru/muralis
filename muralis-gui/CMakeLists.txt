@@ -1,5 +1,16 @@
 cmake_minimum_required(VERSION 3.16)
-project(muralis-gui VERSION 0.1.8 LANGUAGES CXX)
+
+# The workspace manifest is the single place the muralis version is declared, so
+# the GUI reads it rather than carrying one of its own — before project(), which
+# is handed the version it finds.
+file(READ "${CMAKE_CURRENT_SOURCE_DIR}/../Cargo.toml" MURALIS_WORKSPACE_MANIFEST)
+string(REGEX MATCH "\nversion = \"([^\"]+)\"" _ "${MURALIS_WORKSPACE_MANIFEST}")
+set(MURALIS_VERSION "${CMAKE_MATCH_1}")
+if(NOT MURALIS_VERSION)
+    message(FATAL_ERROR "no workspace version in Cargo.toml to build muralis-gui with")
+endif()
+
+project(muralis-gui VERSION "${MURALIS_VERSION}" LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -8,16 +19,10 @@ set(CMAKE_AUTOMOC ON)
 find_package(Qt6 REQUIRED COMPONENTS Quick QuickControls2 QuickTest Network Test)
 
 # The muralis User-Agent has one definition — assets/user-agent.tmpl — rendered
-# here for C++ exactly as muralis-core renders it for the Rust crates. The
-# version comes from the workspace manifest, the single place it is declared.
+# here for C++ exactly as muralis-core renders it for the Rust crates, with the
+# workspace version read above.
 file(READ "${CMAKE_CURRENT_SOURCE_DIR}/../assets/user-agent.tmpl" MURALIS_UA_TEMPLATE)
 string(STRIP "${MURALIS_UA_TEMPLATE}" MURALIS_UA_TEMPLATE)
-file(READ "${CMAKE_CURRENT_SOURCE_DIR}/../Cargo.toml" MURALIS_WORKSPACE_MANIFEST)
-string(REGEX MATCH "\nversion = \"([^\"]+)\"" _ "${MURALIS_WORKSPACE_MANIFEST}")
-set(MURALIS_VERSION "${CMAKE_MATCH_1}")
-if(NOT MURALIS_VERSION)
-    message(FATAL_ERROR "no workspace version in Cargo.toml to render the User-Agent with")
-endif()
 string(REPLACE "{version}" "${MURALIS_VERSION}" MURALIS_USER_AGENT "${MURALIS_UA_TEMPLATE}")
 configure_file(src/muralis_user_agent.h.in
     "${CMAKE_CURRENT_BINARY_DIR}/muralis_user_agent.h" @ONLY)
@@ -70,6 +75,11 @@ qt_add_executable(muralis-gui-tests tests/main.cpp)
 target_compile_definitions(muralis-gui-tests PRIVATE
     QUICK_TEST_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests")
 target_link_libraries(muralis-gui-tests PRIVATE Qt6::Quick Qt6::QuickTest)
+
+add_test(NAME version-tracks-workspace COMMAND "${CMAKE_COMMAND}"
+    "-DWORKSPACE_MANIFEST=${CMAKE_CURRENT_SOURCE_DIR}/../Cargo.toml"
+    "-DDECLARED_VERSION=${PROJECT_VERSION}"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/version_tracks_workspace.cmake")
 
 add_test(NAME qml-logic COMMAND muralis-gui-tests)
 set_tests_properties(qml-logic PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
