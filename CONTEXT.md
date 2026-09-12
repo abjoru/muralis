@@ -91,6 +91,10 @@ The eight-slug default the crate supplies when config names none. The site's sit
 **Access posture**:
 Part of the **Ultrawide Source**'s contract, not an optimisation: one page fetch per user action, thumbnails served from the local thumbnail cache rather than re-fetched per render (the Source itself never fetches a thumbnail — it passes the card's URL on), a muralis-identifying `User-Agent` on every outbound request, attribution plus a `source_url` link-back on every **Preview**, and no enumeration beyond what a **Category page** publicly lists. The site's terms restrict automated tools; this integration is a user-initiated renderer producing a browser's request volume, and these constraints are what keep that true as the feature evolves.
 
+**Drift check**:
+The weekly scheduled job that asks whether ultrawidewallpapers.net still parses (`.github/workflows/ultrawide-drift.yml`, driven by `muralis-source-ultrawide::check_live_category`). The **Card** fixtures are frozen on their capture date, so the offline suite passes however far the site moves — confidence grows exactly as accuracy decays. The check fetches one **Category page** and runs the *production* parser over it, never a reimplementation: a check with its own parsing logic can only disagree with the real one. It is emphatically not part of the suite, which stays offline and deterministic; it never runs on push or pull request, and its one fetch per week carries the **muralis User-Agent**, consistent with the **Access posture**. Only a page that arrived intact and yielded no Card is drift, and only drift is filed as an issue — a timeout, a 5xx and a rate limit are transient and say nothing about the markup. Success is silent, and refreshing a fixture stays a human decision, because a new capture is a new parser contract.
+_Avoid_: smoke test (it monitors a third party, it does not exercise muralis end to end), scraper health check
+
 ### Content safety
 
 **Content Safety policy**:

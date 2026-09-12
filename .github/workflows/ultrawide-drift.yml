@@ -1,0 +1,95 @@
+# The Ultrawide Source parses markup it does not own. Its offline fixtures are
+# frozen on their capture date, so the suite goes on passing however far the
+# site moves. This job is the only thing that asks the live site the question.
+#
+# Deliberately NOT part of CI: it reaches the network, so it never runs on push
+# or pull request, and `cargo test --workspace` stays offline and deterministic.
+# One page fetch per run, weekly, identifying muralis — the Access posture the
+# Source keeps at runtime applies to its monitoring too.
+name: Ultrawide drift check
+
+on:
+  schedule:
+    # Mondays, 06:17 UTC. Weekly is a health check; anything denser is a crawl.
+    - cron: '17 6 * * 1'
+  workflow_dispatch:
+    inputs:
+      category:
+        description: Category slug to check
+        required: false
+        default: 32-9-wallpapers
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: ultrawide-drift
+  cancel-in-progress: false
+
+jobs:
+  drift:
+    runs-on: ubuntu-latest
+    env:
+      CATEGORY: ${{ inputs.category || '32-9-wallpapers' }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libssl-dev libsqlite3-dev
+
+      - name: Build the check
+        # Built separately so the run below emits nothing but the report, and
+        # its exit code is the check's own.
+        run: cargo build --quiet -p muralis-source-ultrawide --example drift-check
+
+      - name: Fetch one category page and run the production parser over it
+        id: check
+        run: |
+          set +e
+          report=$(./target/debug/examples/drift-check "$CATEGORY")
+          code=$?
+          set -e
+          echo "$report"
+          echo "code=$code" >> "$GITHUB_OUTPUT"
+          {
+            echo 'report<<DRIFT_REPORT_EOF'
+            echo "$report"
+            echo 'DRIFT_REPORT_EOF'
+          } >> "$GITHUB_OUTPUT"
+          echo "$report" >> "$GITHUB_STEP_SUMMARY"
+
+      # Drift, and only drift, is filed: a page arrived intact and the parser
+      # found no card. Refreshing the fixture stays a human decision — a new
+      # capture is a new parser contract — so nothing here commits anything.
+      - name: File the drift where a maintainer will see it
+        if: steps.check.outputs.code == '1'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPORT: ${{ steps.check.outputs.report }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          title="Ultrawide Source: the live '$CATEGORY' page no longer parses"
+          body=$(printf '%s\n\n---\nFound by the weekly drift check: %s\n\nRefreshing the fixture is a human decision — a new capture is a new parser contract.\n' "$REPORT" "$RUN_URL")
+          existing=$(gh issue list --state open --search "in:title $title" \
+            --json number,title --jq "map(select(.title == \"$title\")) | .[0].number // empty")
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --body "$body"
+          else
+            gh issue create --title "$title" --label bug --body "$body"
+          fi
+          exit 1
+
+      # A timeout, a 5xx or a rate limit says nothing about the markup. Visible
+      # as a failed run, but never filed and never called drift.
+      - name: Report a transient failure without calling it drift
+        if: steps.check.outputs.code == '2'
+        env:
+          REPORT: ${{ steps.check.outputs.report }}
+        run: |
+          echo "::warning title=Ultrawide drift check could not reach the site::$REPORT"
+          echo 'Transient: no issue filed, and no conclusion drawn about the markup.' >> "$GITHUB_STEP_SUMMARY"
+          exit 1

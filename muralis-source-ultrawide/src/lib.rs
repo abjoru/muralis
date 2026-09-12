@@ -25,6 +25,10 @@ use muralis_core::sources::{
 };
 use muralis_source_common::{HttpFetch, ReqwestFetch};
 
+pub mod drift;
+
+pub use drift::{check_live_category, DriftCheck};
+
 /// Stable identity for this host, so its filename-shaped `source_id`s cannot
 /// collide with another Source's ids.
 const SOURCE_TYPE: &str = "ultrawide";
