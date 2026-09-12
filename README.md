@@ -105,7 +105,9 @@ The GUI provides:
 - Source chips for searched sources, a dropdown for browsed ones
 - A category bar for a browsed source that publishes categories; selecting a
   category loads its first page (a feed publishes none — selecting it loads)
-- Thumbnail grid with adaptive columns
+- Thumbnail grid with adaptive columns, cached to `~/.cache/muralis/thumbnails`
+  so a thumbnail is fetched once and survives a restart (`cache stats` counts
+  them, `cache prune` trims them)
 - Preview drawer with metadata and actions
 - One-click favoriting (downloads full image, deduplicates by SHA-256)
 - Keyboard-driven navigation (search/browse/grid/preview modes)

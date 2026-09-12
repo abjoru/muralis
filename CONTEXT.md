@@ -150,6 +150,28 @@ The fixed number of upstream API pages a **RestSource** maps to one logical page
 The transport seam behind **RestSource**, at bytes level: `get(url, headers, query) -> (StatusCode, Bytes)`. Lives in `muralis-source-common`. The real adapter wraps `reqwest`; the test adapter returns canned bytes and asserts the auth header and pagination params. Auth injection and JSON parsing live in **RestSource**, not behind this seam.
 _Avoid_: HttpClient, Transport, Fetcher
 
+**muralis User-Agent**:
+The one identification every request muralis originates carries, whichever
+binary originates it — `muralis/<version> (wallpaper manager; +<repo url>)`.
+Defined once, in `assets/user-agent.tmpl`: `muralis-core` renders it for the CLI
+client and the **Sources**, CMake renders the same template for the GUI. A
+second literal would drift, and the **Access posture** is a promise about what
+goes on the wire, not about one crate. The GUI stamps it at its network layer,
+so no `Image` can reintroduce an anonymous request.
+_Avoid_: UA string, client identifier
+
+**Preview thumbnail cache**:
+The GUI's on-disk store of **Preview** thumbnails, in the same
+`~/.cache/muralis/thumbnails` that `muralis cache stats` accounts for and
+`muralis cache prune` trims. Keyed by a digest of the whole thumbnail URL, so
+two images sharing a filename are two entries. A thumbnail is fetched once and
+served locally on every render after, including after a restart — which is what
+the **Access posture** means by serving thumbnails from a local cache. Distinct
+from the **Library** thumbnails the daemon writes for kept **Wallpapers**
+(`<id>_thumb.jpg`) alongside it. Full-resolution drawer images are identified
+but never cached: large, and looked at once.
+_Avoid_: image cache (Qt's own per-process one is what this replaces)
+
 ### Display
 
 **Backend**:

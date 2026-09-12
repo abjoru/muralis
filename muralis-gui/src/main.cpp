@@ -24,7 +24,9 @@ void messageHandler(QtMsgType type, const QMessageLogContext &ctx, const QString
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QFile>
+#include "muralisnetwork.h"
 #include "processrunner.h"
+#include "thumbnailcache.h"
 
 static QJsonObject readJsonFile(const QString &path) {
     QFile file(path);
@@ -60,8 +62,21 @@ int main(int argc, char *argv[]) {
 
     QQmlApplicationEngine engine;
 
+    // Every request the engine issues is identified as muralis — the drawer's
+    // full-resolution Image included — without any call site having to ask.
+    static MuralisNetworkAccessManagerFactory namFactory;
+    engine.setNetworkAccessManagerFactory(&namFactory);
+
     auto *runner = new ProcessRunner(&app);
     engine.rootContext()->setContextProperty("CLI", runner);
+
+    // Thumbnails land in the cache directory `muralis cache stats` reports and
+    // `muralis cache prune` trims, so a rendered grid costs one fetch per
+    // thumbnail and nothing on the renders after it.
+    QString thumbnailDir = QStandardPaths::writableLocation(QStandardPaths::GenericCacheLocation)
+                           + "/muralis/thumbnails";
+    auto *thumbnails = new ThumbnailCache(thumbnailDir, &app);
+    engine.rootContext()->setContextProperty("Thumbnails", thumbnails);
 
     // Expose paths for Theme.qml
     QString configDir = QStandardPaths::writableLocation(QStandardPaths::ConfigLocation);

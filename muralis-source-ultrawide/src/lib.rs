@@ -37,11 +37,9 @@ const BASE_URL: &str = "https://www.ultrawidewallpapers.net/";
 /// Outbound requests say who is asking. Part of the access posture: this
 /// Source is a user-initiated renderer, and an operator reading their logs
 /// should be able to tell that from the request itself.
-const USER_AGENT: &str = concat!(
-    "muralis/",
-    env!("CARGO_PKG_VERSION"),
-    " (wallpaper manager; +https://github.com/abjoru/muralis)"
-);
+fn user_agent() -> &'static str {
+    muralis_core::http::user_agent()
+}
 
 /// Every master the site publishes is a single 32:9 image of exactly this
 /// size; other ratios exist only inside its own server-side crop tool.
@@ -188,7 +186,7 @@ impl WallpaperSource for UltrawideSource {
         let url = category_url(slug);
         let (status, body) = self
             .http
-            .get(&url, &[("User-Agent", USER_AGENT)], &[])
+            .get(&url, &[("User-Agent", user_agent())], &[])
             .await?;
         if !status.is_success() {
             return Err(source_error(
@@ -260,7 +258,7 @@ impl WallpaperSource for UltrawideSource {
     async fn download(&self, preview: &WallpaperPreview) -> Result<bytes::Bytes> {
         let (status, body) = self
             .http
-            .get(&preview.full_url, &[("User-Agent", USER_AGENT)], &[])
+            .get(&preview.full_url, &[("User-Agent", user_agent())], &[])
             .await?;
         if !status.is_success() {
             return Err(source_error(

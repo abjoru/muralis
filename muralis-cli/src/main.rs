@@ -336,11 +336,7 @@ fn browse_target<'a>(registry: &'a SourceRegistry, name: &str) -> Result<&'a dyn
 
 fn build_registry(config: &Config) -> Result<(SourceRegistry, reqwest::Client)> {
     let client = reqwest::Client::builder()
-        .user_agent(concat!(
-            "muralis/",
-            env!("CARGO_PKG_VERSION"),
-            " (wallpaper manager)"
-        ))
+        .user_agent(muralis_core::http::user_agent())
         .build()?;
     let sources = &config.sources;
     // Build the global cross-cutting context once (ADR 0003): content-safety

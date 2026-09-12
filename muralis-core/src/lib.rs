@@ -4,6 +4,7 @@ pub mod config;
 pub mod crop_overlay;
 pub mod db;
 pub mod error;
+pub mod http;
 pub mod ipc;
 pub mod models;
 pub mod paths;

@@ -13,6 +13,30 @@ Item {
     signal clicked()
     signal doubleClicked()
 
+    // A card renders the local copy, never the remote URL: the fetch that fills
+    // the cache is identified as muralis and happens once per thumbnail, where
+    // binding an Image straight to the URL is anonymous and fetched every time.
+    property string localSource: ""
+    property bool fetchFailed: false
+
+    function resolveThumbnail() {
+        fetchFailed = false
+        localSource = thumbnailUrl ? Thumbnails.request(thumbnailUrl) : ""
+    }
+
+    onThumbnailUrlChanged: resolveThumbnail()
+    Component.onCompleted: resolveThumbnail()
+
+    Connections {
+        target: Thumbnails
+        function onReady(remoteUrl, localUrl) {
+            if (remoteUrl === root.thumbnailUrl) root.localSource = localUrl
+        }
+        function onFailed(remoteUrl, reason) {
+            if (remoteUrl === root.thumbnailUrl) root.fetchFailed = true
+        }
+    }
+
     Rectangle {
         id: card
         anchors.fill: parent
@@ -29,12 +53,15 @@ Item {
             id: thumb
             anchors.fill: parent
             anchors.margins: root.isSelected ? 2 : 0
-            source: root.thumbnailUrl
+            source: root.localSource
             fillMode: Image.PreserveAspectCrop
             asynchronous: true
             cache: true
 
-            // Loading placeholder
+            // Loading and failed are two states, not one blank card: a
+            // thumbnail that will never arrive says so instead of spinning.
+            readonly property bool broken: root.fetchFailed || thumb.status === Image.Error
+
             Rectangle {
                 anchors.fill: parent
                 color: Theme.surfaceContainer
@@ -42,10 +69,19 @@ Item {
 
                 BusyIndicator {
                     anchors.centerIn: parent
-                    running: thumb.status === Image.Loading
+                    running: !thumb.broken && thumb.status !== Image.Ready
+                    visible: running
                     width: 24
                     height: 24
                     Material.accent: Theme.primary
+                }
+
+                Label {
+                    anchors.centerIn: parent
+                    visible: thumb.broken
+                    text: "\u26A0"
+                    font.pixelSize: 22
+                    color: Theme.withAlpha(Theme.surfaceText, 0.5)
                 }
             }
         }
