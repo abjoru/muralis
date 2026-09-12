@@ -12,8 +12,11 @@
 # reading `src` on a page that lazy-loads, and every Preview it produced carried
 # a 1x1 placeholder: a full complement of cards, none of them usable. So the
 # check asks whether what parsed is usable, and its report names which question
-# failed — cards-present, fields-usable, card-count, tag-vocabulary or
-# urls-resolve.
+# failed — cards-present, fields-usable, card-count, tag-vocabulary, urls-resolve
+# or urls-refused. The sampled master is fetched exactly as the Source fetches
+# one, referer included, so the site's hotlink gate fails this check rather than
+# waiting for a user who cannot keep a wallpaper; urls-refused is that gate
+# having moved, and is never a rate limit, which stays transient.
 #
 # tag-vocabulary is the one the markup cannot answer: the endpoint returns an
 # empty fragment for a tag it does not know, exactly as it does for a real tag

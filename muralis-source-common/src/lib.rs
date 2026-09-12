@@ -766,6 +766,53 @@ mod tests {
         assert!(http.calls().is_empty(), "should not hit the network");
     }
 
+    /// One Source needs a `Referer` — ultrawidewallpapers.net gates its
+    /// full-resolution images on it — and it sends its own, locally. Nothing
+    /// reaches a REST API through this engine claiming to come from a page:
+    /// a header that says where a request came from is a statement about one
+    /// site's gate, not a thing to leak to every host muralis talks to.
+    #[tokio::test]
+    async fn no_rest_source_says_where_its_request_came_from() {
+        let http = Arc::new(StubFetch::new(vec![
+            (
+                StatusCode::OK,
+                bytes::Bytes::from_static(br#"{"items":[{"id":"a","w":1,"h":1}]}"#),
+            ),
+            (
+                StatusCode::OK,
+                bytes::Bytes::from_static(br#"{"id":"a","w":1,"h":1}"#),
+            ),
+            (StatusCode::OK, bytes::Bytes::from_static(b"IMGDATA")),
+        ]));
+        let src: RestSource<FixSearch, FixItem> = RestSource::new(descriptor(), http.clone());
+        let preview = WallpaperPreview {
+            source_type: SourceType::new("fix"),
+            source_id: "a".into(),
+            source_url: "https://fix.test/a".into(),
+            thumbnail_url: "t".into(),
+            full_url: "https://cdn.fix.test/a.jpg".into(),
+            width: 1,
+            height: 1,
+            tags: Vec::new(),
+        };
+
+        src.search("x", 1, 24, AspectRatioFilter::All)
+            .await
+            .unwrap();
+        src.resolve_url("https://fix.test/p/1").await.unwrap();
+        src.download(&preview).await.unwrap();
+
+        for call in http.calls() {
+            assert_eq!(
+                call.header_value("Referer"),
+                None,
+                "no Referer on {}",
+                call.url
+            );
+        }
+        assert_eq!(http.calls().len(), 3, "search, resolve and download");
+    }
+
     #[tokio::test]
     async fn download_fetches_full_url_bytes() {
         let http = Arc::new(StubFetch::ok("IMGDATA"));

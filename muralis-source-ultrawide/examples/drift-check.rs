@@ -11,7 +11,7 @@
 //! Exit code is the answer — `0` parsed, `1` drifted, `2` transient — so the
 //! workflow can file an issue for drift alone without reading prose. The
 //! report names which question failed: `cards-present`, `fields-usable`,
-//! `card-count`, `tag-vocabulary` or `urls-resolve`.
+//! `card-count`, `tag-vocabulary`, `urls-resolve` or `urls-refused`.
 //!
 //! One window of the gallery endpoint, one gallery page, plus two one-byte
 //! verification requests per sampled card. Nothing here is a crawl.

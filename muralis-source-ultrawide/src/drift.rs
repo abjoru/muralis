@@ -36,7 +36,10 @@ use std::sync::LazyLock;
 use muralis_core::models::WallpaperPreview;
 use muralis_source_common::HttpFetch;
 
-use super::{gallery_request, parse_gallery, user_agent, CARD_SEL, DEFAULT_TAGS, GALLERY_PAGE};
+use super::{
+    gallery_referer, gallery_request, parse_gallery, user_agent, CARD_SEL, DEFAULT_TAGS,
+    GALLERY_PAGE, REFERER,
+};
 
 static TITLE_SEL: LazyLock<Selector> =
     LazyLock::new(|| Selector::parse("title").expect("valid selector"));
@@ -139,6 +142,20 @@ pub enum DriftFailure {
         url: String,
         status: u16,
     },
+    /// A URL the site has, refused to the request the Source makes for it.
+    /// Its own question, because it is its own job: the **Master** paths are
+    /// gated on the page a request says it came from, so a refusal *with* that
+    /// page named means the gate has moved — not that the parser built a URL
+    /// the site does not have, and not that muralis asked for too much.
+    RefusedUrl {
+        field: &'static str,
+        card: String,
+        url: String,
+        status: u16,
+        /// What the request said it came from, or `None` where the Source
+        /// sends nothing — so a report names the request that was refused.
+        referer: Option<String>,
+    },
 }
 
 impl DriftFailure {
@@ -152,6 +169,7 @@ impl DriftFailure {
             DriftFailure::ImplausibleCount { .. } => "card-count",
             DriftFailure::VocabularyDrifted { .. } => "tag-vocabulary",
             DriftFailure::UnresolvableUrl { .. } => "urls-resolve",
+            DriftFailure::RefusedUrl { .. } => "urls-refused",
         }
     }
 
@@ -182,6 +200,23 @@ impl DriftFailure {
             } => format!(
                 "the {field} of card '{card}' is well-formed and the site does not \
                  serve it: HTTP {status} for {url}"
+            ),
+            DriftFailure::RefusedUrl {
+                field,
+                card,
+                url,
+                status,
+                referer,
+            } => format!(
+                "the site refused the {field} of card '{card}': HTTP {status} for {url}, \
+                 fetched exactly as the Source fetches it ({sent}). The masters are gated \
+                 on the page a request says it came from, so a refusal here is an \
+                 authorization gate that has moved — not a URL the site lacks, and not \
+                 muralis being asked to slow down",
+                sent = match referer {
+                    Some(value) => format!("Referer: {value}"),
+                    None => "no Referer, which is what the Source sends for this field".to_string(),
+                },
             ),
         }
     }
@@ -388,8 +423,8 @@ pub async fn check_live_gallery_with(
 
     // A sample, not every card: this is the part that costs requests.
     let mut verified = 0;
-    for (field, card, target) in sample_urls(&previews, limits.sample) {
-        match verify(http, &tag, &url, field, card, target).await {
+    for sampled in sample_urls(&previews, limits.sample) {
+        match verify(http, &tag, &url, &sampled).await {
             Some(outcome) => return outcome,
             None => verified += 1,
         }
@@ -496,18 +531,19 @@ async fn verify(
     http: &dyn HttpFetch,
     tag: &str,
     window: &str,
-    field: &'static str,
-    card: &str,
-    target: &str,
+    sampled: &Sampled<'_>,
 ) -> Option<DriftCheck> {
-    let (status, _) = match http
-        .get(
-            target,
-            &[("User-Agent", user_agent()), ("Range", ONE_BYTE)],
-            &[],
-        )
-        .await
-    {
+    let Sampled {
+        field,
+        card,
+        url: target,
+        referer,
+    } = sampled;
+    let mut headers = vec![("User-Agent", user_agent()), ("Range", ONE_BYTE)];
+    if let Some(value) = referer {
+        headers.push((REFERER, value.as_str()));
+    }
+    let (status, _) = match http.get(target, &headers, &[]).await {
         Ok(response) => response,
         Err(e) => {
             return Some(DriftCheck::Unreachable {
@@ -534,17 +570,30 @@ async fn verify(
             status: status.as_u16(),
         });
     }
-    // A 404 or a 403 on a URL the parser just extracted is not a transport
-    // story: the parser built a URL the site does not have.
-    Some(DriftCheck::Drifted {
-        tag: tag.to_string(),
-        url: window.to_string(),
-        failure: DriftFailure::UnresolvableUrl {
+    // A refusal and a miss are both drift, and both are the site's answer to a
+    // URL the parser just built — but they are different jobs. A 403 says the
+    // site has the URL and would not serve *this* request; anything else says
+    // it does not have it.
+    let failure = if status == StatusCode::FORBIDDEN {
+        DriftFailure::RefusedUrl {
             field,
             card: card.to_string(),
             url: target.to_string(),
             status: status.as_u16(),
-        },
+            referer: referer.clone(),
+        }
+    } else {
+        DriftFailure::UnresolvableUrl {
+            field,
+            card: card.to_string(),
+            url: target.to_string(),
+            status: status.as_u16(),
+        }
+    };
+    Some(DriftCheck::Drifted {
+        tag: tag.to_string(),
+        url: window.to_string(),
+        failure,
     })
 }
 
@@ -594,19 +643,38 @@ fn clip(value: &str) -> String {
     format!("{}...", value.chars().take(LIMIT).collect::<String>())
 }
 
+/// One sampled URL, and the request the **Ultrawide Source** itself would make
+/// for it. The master carries the gallery **Referer** because `download` does:
+/// a verification fetched any other way asks a question no user ever asks, and
+/// that is exactly how a gate on the masters went unnoticed here. The
+/// thumbnail is not gated and gains nothing — the Source sends none for it
+/// either.
+struct Sampled<'a> {
+    field: &'static str,
+    card: &'a str,
+    url: &'a str,
+    referer: Option<String>,
+}
+
 /// Both URLs of each sampled **Preview**, in the order the window listed them.
-fn sample_urls(previews: &[WallpaperPreview], sample: usize) -> Vec<(&'static str, &str, &str)> {
+fn sample_urls(previews: &[WallpaperPreview], sample: usize) -> Vec<Sampled<'_>> {
     spread(previews.len(), sample)
         .into_iter()
         .flat_map(|i| {
             let p = &previews[i];
             [
-                (
-                    "thumbnail URL",
-                    p.source_id.as_str(),
-                    p.thumbnail_url.as_str(),
-                ),
-                ("master URL", p.source_id.as_str(), p.full_url.as_str()),
+                Sampled {
+                    field: "thumbnail URL",
+                    card: p.source_id.as_str(),
+                    url: p.thumbnail_url.as_str(),
+                    referer: None,
+                },
+                Sampled {
+                    field: "master URL",
+                    card: p.source_id.as_str(),
+                    url: p.full_url.as_str(),
+                    referer: gallery_referer(&p.full_url),
+                },
             ]
         })
         .collect()
@@ -982,6 +1050,67 @@ mod tests {
         );
     }
 
+    /// The check samples a master so that a gate on the masters fails here
+    /// rather than waiting for a user to try to keep one. A sample fetched
+    /// differently from the way the Source fetches one answers a question
+    /// nobody asked: the site gates on the page a request came from, so the
+    /// verification says the same thing a keep does.
+    #[tokio::test]
+    async fn a_sampled_master_is_fetched_the_way_the_source_fetches_one() {
+        let stub = Arc::new(run(WINDOW, GALLERY, &[200; 4]));
+
+        check_live_gallery(stub.as_ref(), "Dark").await;
+
+        for call in &stub.calls()[2..] {
+            let referer = call.header_value("Referer");
+            if call.url.contains("/highres/") {
+                assert_eq!(
+                    referer,
+                    Some("https://ultrawidewallpapers.net/gallery"),
+                    "a master is verified with the header the Source sends: {}",
+                    call.url
+                );
+            } else {
+                assert_eq!(
+                    referer, None,
+                    "and a thumbnail, which is not gated, gains nothing: {}",
+                    call.url
+                );
+            }
+        }
+    }
+
+    /// A master refused *with* the referer sent is the gate having moved —
+    /// a different maintenance job from a URL the site does not have, and a
+    /// different one again from being asked to slow down. The report says
+    /// which, because the whole defect this check exists to catch was read as
+    /// "some files are forbidden" for want of that distinction.
+    #[tokio::test]
+    async fn a_master_the_site_refuses_is_drift_and_reads_apart_from_a_rate_limit() {
+        // The first card's thumbnail verifies, its master is refused.
+        let refused = check_live_gallery(&run(WINDOW, GALLERY, &[200, 403]), "Dark").await;
+        let limited = check_live_gallery(&run(WINDOW, GALLERY, &[200, 429]), "Dark").await;
+
+        assert!(refused.is_drift(), "{}", refused.report());
+        assert_eq!(refused.exit_code(), 1);
+        let report = refused.report();
+        assert!(
+            report.contains("urls-refused"),
+            "its own question, not the one a missing URL answers: {report}"
+        );
+        assert!(
+            report.contains("403") && report.contains("aishot-5792.jpg"),
+            "naming the status and the card: {report}"
+        );
+        assert!(
+            report.contains("Referer"),
+            "and the header it sent, so the next step is obvious: {report}"
+        );
+
+        assert!(!limited.is_drift(), "{}", limited.report());
+        assert_eq!(limited.tag(), "RATE_LIMITED");
+    }
+
     #[tokio::test]
     async fn a_verification_request_that_is_rate_limited_or_fails_is_never_called_drift() {
         for (status, tag) in [(429, "RATE_LIMITED"), (503, "REJECTED")] {
@@ -1147,6 +1276,13 @@ mod tests {
                 card: String::new(),
                 url: String::new(),
                 status: 404,
+            },
+            DriftFailure::RefusedUrl {
+                field: "f",
+                card: String::new(),
+                url: String::new(),
+                status: 403,
+                referer: None,
             },
         ]
         .map(|f| f.check());

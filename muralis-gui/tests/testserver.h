@@ -23,9 +23,13 @@ public:
     int requestCount() const { return paths.size(); }
     QStringList requestedPaths() const { return paths; }
     QStringList userAgents() const { return agents; }
+    // What each request said it came from — empty where it said nothing. The
+    // site behind the Ultrawide Source gates its full-resolution images on it.
+    QStringList referers() const { return refs; }
     void forget() {
         paths.clear();
         agents.clear();
+        refs.clear();
     }
 
     // The body every 200 carries: a real 1x1 PNG, so a cached file is a
@@ -48,12 +52,16 @@ private slots:
             const QList<QByteArray> lines = head.split('\n');
             const QString path = QString::fromUtf8(lines.first().split(' ').value(1)).trimmed();
             QString agent;
+            QString referer;
             for (const QByteArray &line : lines) {
                 if (line.toLower().startsWith("user-agent:"))
                     agent = QString::fromUtf8(line.mid(line.indexOf(':') + 1)).trimmed();
+                if (line.toLower().startsWith("referer:"))
+                    referer = QString::fromUtf8(line.mid(line.indexOf(':') + 1)).trimmed();
             }
             paths << path;
             agents << agent;
+            refs << referer;
 
             QByteArray response;
             if (path.contains(QStringLiteral("missing"))) {
@@ -74,6 +82,7 @@ private:
     QByteArray buffer;
     QStringList paths;
     QStringList agents;
+    QStringList refs;
 };
 
 #endif // TESTSERVER_H

@@ -33,6 +33,7 @@ use muralis_core::sources::{
     AspectRatioFilter, RetrievalMode, SourceCategory, SourceContext, WallpaperSource,
 };
 use muralis_source_common::{HttpFetch, ReqwestFetch};
+use reqwest::StatusCode;
 
 pub mod drift;
 
@@ -64,6 +65,14 @@ const GALLERY_ENDPOINT: &str = "https://ultrawidewallpapers.net/gallery_load.php
 /// **Preview**'s `source_url` link-back, and the **Drift check**'s question
 /// about whether the shipped tag vocabulary still matches what it publishes.
 pub(crate) const GALLERY_PAGE: &str = "https://ultrawidewallpapers.net/gallery";
+
+/// The gallery page's path, which a master request's referer is built from on
+/// whichever host that master names.
+const GALLERY_PATH: &str = "/gallery";
+
+/// The header the site gates its masters on, and the only header muralis sends
+/// beyond the **muralis User-Agent** — on this Source's master requests alone.
+pub(crate) const REFERER: &str = "Referer";
 
 /// The query parameter the gallery page reads its tag selection from, so a
 /// link-back opens on the selection the **Preview** was browsed under.
@@ -296,12 +305,11 @@ impl WallpaperSource for UltrawideSource {
             .get(&url, &[("User-Agent", user_agent())], &[])
             .await?;
         if !status.is_success() {
-            return Err(source_error(
+            return Err(http_error(
                 "browse",
-                format!(
-                    "{DISPLAY_NAME}: tag '{tags}' returned HTTP {status} for {url}",
-                    tags = tag_list(categories)
-                ),
+                status,
+                &url,
+                &format!("tag '{tags}'", tags = tag_list(categories)),
             ));
         }
         let html = String::from_utf8_lossy(&body);
@@ -357,22 +365,50 @@ impl WallpaperSource for UltrawideSource {
 
     /// The full-resolution master, byte-for-byte as the site serves it — this
     /// Source never crops, resizes or otherwise alters an image.
+    ///
+    /// The request says where it came from. The site gates its master paths at
+    /// the origin, so an un-refered request is refused; only Cloudflare having
+    /// the master cached ever made this path look like it worked. The header
+    /// is the one a browser sends when the gallery link is clicked, and this
+    /// Source exists to render that gallery — so it is the request the site
+    /// expects from the page it serves, not a way around a control.
     async fn download(&self, preview: &WallpaperPreview) -> Result<bytes::Bytes> {
-        let (status, body) = self
-            .http
-            .get(&preview.full_url, &[("User-Agent", user_agent())], &[])
-            .await?;
+        let referer = gallery_referer(&preview.full_url);
+        let mut headers = vec![("User-Agent", user_agent())];
+        if let Some(value) = &referer {
+            headers.push((REFERER, value.as_str()));
+        }
+        let (status, body) = self.http.get(&preview.full_url, &headers, &[]).await?;
         if !status.is_success() {
-            return Err(source_error(
+            return Err(http_error(
                 "download",
-                format!(
-                    "{DISPLAY_NAME}: HTTP {status} for {url}",
-                    url = preview.full_url
-                ),
+                status,
+                &preview.full_url,
+                "the master",
             ));
         }
         Ok(body)
     }
+}
+
+/// The page a master request claims to come from, on the *same host* the URL
+/// being fetched names. The site answers on two hosts and redirects one to the
+/// other, and a redirect is a second request — so a referer naming the apex
+/// while the master names `www.` (or the other way round) describes a page the
+/// request did not come from. Whichever host the **Preview** carries, this
+/// agrees with it.
+///
+/// `None` for any other host: the header exists for one site's gate, and a URL
+/// this Source does not own is told nothing about where muralis has been.
+pub(crate) fn gallery_referer(master_url: &str) -> Option<String> {
+    let mut url = Url::parse(master_url).ok()?;
+    if !url.host_str().is_some_and(is_site_host) {
+        return None;
+    }
+    url.set_path(GALLERY_PATH);
+    url.set_query(None);
+    url.set_fragment(None);
+    Some(url.into())
 }
 
 /// The two hosts the site answers on. Exact matches: a suffix test would hand
@@ -416,6 +452,31 @@ fn is_image_filename(name: &str) -> bool {
     [".jpg", ".jpeg", ".png", ".webp"]
         .iter()
         .any(|ext| lower.ends_with(ext))
+}
+
+/// A non-success status from the site, told apart where it is read. A 403 and
+/// a 429 come from the same host and mean opposite things: one is an
+/// authorization gate that waiting does not clear, the other is muralis's own
+/// volume and clears on its own. Conflating them is how the master gate stayed
+/// hidden behind "some files are forbidden" — so neither is ever reported as
+/// the other, and each says what to do about it.
+fn http_error(op: &'static str, status: StatusCode, url: &str, subject: &str) -> MuralisError {
+    let detail = match status {
+        StatusCode::FORBIDDEN => {
+            "the site refused it. That is an authorization gate, not request volume: \
+             it does not clear by waiting, and a master is gated on the page the \
+             request says it came from"
+        }
+        StatusCode::TOO_MANY_REQUESTS => {
+            "the site asked muralis to slow down. That is request volume, transient, \
+             and it clears on its own"
+        }
+        _ => "the site did not serve it",
+    };
+    source_error(
+        op,
+        format!("{DISPLAY_NAME}: HTTP {status} for {url} ({subject}) — {detail}"),
+    )
 }
 
 fn source_error(op: &str, kind: impl Into<String>) -> MuralisError {
@@ -1181,6 +1242,77 @@ mod tests {
             .is_some_and(|ua| ua.starts_with("muralis/")));
     }
 
+    /// The site hotlink-protects its masters at the origin: an un-refered
+    /// request for one is answered 403, and only a CDN cache hit ever hid
+    /// that. So a master request carries the header a browser sends when the
+    /// gallery link is clicked — the gallery this Source exists to render.
+    #[tokio::test]
+    async fn a_master_request_says_it_comes_from_the_gallery_the_source_renders() {
+        let stub = Arc::new(StubFetch::new(vec![(
+            reqwest::StatusCode::OK,
+            bytes::Bytes::from_static(b"master"),
+        )]));
+        let src = source_from(stub.clone());
+        let preview = src
+            .resolve_url("https://ultrawidewallpapers.net/wallpapers/329/highres/aishot-5774.jpg")
+            .await
+            .unwrap()
+            .unwrap();
+
+        src.download(&preview).await.unwrap();
+
+        assert_eq!(
+            stub.last_call().header_value("Referer"),
+            Some("https://ultrawidewallpapers.net/gallery"),
+            "the master is asked for from the page that links to it"
+        );
+    }
+
+    /// The site answers on two hosts and redirects `www.` to the apex, and a
+    /// redirect is a second request. Whichever host the **Preview** carries,
+    /// the referer names a page on *that* host — a mismatched pair describes a
+    /// page the request did not come from, which is the shape the gate refuses.
+    #[tokio::test]
+    async fn the_referer_names_a_page_on_the_same_host_the_preview_does() {
+        let stub = Arc::new(StubFetch::new(vec![(
+            reqwest::StatusCode::OK,
+            bytes::Bytes::from_static(b"master"),
+        )]));
+        let src = source_from(stub.clone());
+        let preview = src
+            .resolve_url(
+                "https://www.ultrawidewallpapers.net/wallpapers/329/highres/aishot-5774.jpg",
+            )
+            .await
+            .unwrap()
+            .unwrap();
+
+        src.download(&preview).await.unwrap();
+
+        let call = stub.last_call();
+        assert_eq!(
+            call.header_value("Referer"),
+            Some("https://www.ultrawidewallpapers.net/gallery"),
+            "a www master is asked for from the www gallery: {url}",
+            url = call.url
+        );
+    }
+
+    /// Only the masters are gated. The endpoint is the site's own infinite
+    /// scroll and answers an un-refered request, so browsing sends nothing
+    /// beyond the identification every muralis request carries.
+    #[tokio::test]
+    async fn browsing_carries_no_referer_because_only_the_masters_are_gated() {
+        let stub = Arc::new(StubFetch::ok(PAGE_1));
+        let src = source_from(stub.clone());
+
+        src.browse(&tags(&["Dark"]), 1, 24, AspectRatioFilter::All)
+            .await
+            .unwrap();
+
+        assert_eq!(stub.last_call().header_value("Referer"), None);
+    }
+
     #[tokio::test]
     async fn a_master_the_site_refuses_is_an_error_not_an_empty_file() {
         let src = source_from(Arc::new(StubFetch::status(403)));
@@ -1196,6 +1328,40 @@ mod tests {
             .expect_err("403 is not an image");
 
         assert!(err.to_string().contains("403"), "{err}");
+    }
+
+    /// The two ways the site says no mean opposite things: a 403 is an
+    /// authorization gate that waiting does not clear, a 429 is muralis's own
+    /// volume and clears on its own. Reporting either as the other sends a
+    /// maintainer looking in the wrong place, which is how the gate stayed
+    /// hidden behind "some files are forbidden" in the first place.
+    #[tokio::test]
+    async fn a_refused_master_reads_differently_from_a_rate_limited_one() {
+        let master = "https://ultrawidewallpapers.net/wallpapers/329/highres/aishot-5774.jpg";
+
+        let mut said = Vec::new();
+        for status in [403, 429] {
+            let src = source_from(Arc::new(StubFetch::status(status)));
+            let preview = src.resolve_url(master).await.unwrap().unwrap();
+            said.push(
+                src.download(&preview)
+                    .await
+                    .expect_err("a refusal is not an image")
+                    .to_string(),
+            );
+        }
+        let (refused, limited) = (&said[0], &said[1]);
+
+        assert!(refused.contains("403"), "{refused}");
+        assert!(
+            refused.contains("refused") && !refused.contains("slow down"),
+            "a 403 reads as a refusal, not as volume: {refused}"
+        );
+        assert!(limited.contains("429"), "{limited}");
+        assert!(
+            limited.contains("slow down") && !limited.contains("refused"),
+            "a 429 reads as volume, not as a refusal: {limited}"
+        );
     }
 
     #[tokio::test]
