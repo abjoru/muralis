@@ -3,6 +3,7 @@ import QtQuick.Controls
 import QtQuick.Controls.Material
 import QtQuick.Layouts
 import MuralisGui
+import "Retrieval.js" as Retrieval
 
 ApplicationWindow {
     id: window
@@ -19,12 +20,16 @@ ApplicationWindow {
 
     color: Theme.surface
 
-    // Keyboard mode state machine
+    // Keyboard mode state machine: SEARCH / BROWSE / GRID / PREVIEW
     property string keyboardMode: "SEARCH"
     property var searchResults: []
     property var sourceList: []
     property int selectedIndex: -1
     property bool loading: false
+    // A retrieval has been issued and answered — distinguishes "nothing yet"
+    // from "nothing found".
+    property bool hasRetrieved: false
+    property string retrievalError: ""
 
     // Load sources on startup
     Component.onCompleted: {
@@ -41,12 +46,18 @@ ApplicationWindow {
     Timer {
         id: initialSearchTimer
         interval: 500
-        onTriggered: executeSearch(InitialQuery, "All", 1, "all")
+        onTriggered: filterBar.executeSearch()
     }
 
     onKeyboardModeChanged: {
         if (keyboardMode === "SEARCH") {
-            filterBar.focusSearch()
+            // A browsed source offers no query field to focus; browsing the
+            // category bar is the equivalent mode.
+            if (filterBar.queryVisible) filterBar.focusSearch()
+            else keyboardMode = categoryBar.visible ? "BROWSE" : "GRID"
+        } else if (keyboardMode === "BROWSE") {
+            if (categoryBar.visible) categoryBar.focusBar()
+            else keyboardMode = "GRID"
         } else {
             gridFocus.forceActiveFocus()
         }
@@ -54,9 +65,15 @@ ApplicationWindow {
 
     Connections {
         target: CLI
-        function onFinished(requestId, stdout, exitCode) {
+        function onFinished(requestId, stdout, stderr, exitCode) {
             if (exitCode !== 0) {
-                console.error("CLI failed:", requestId, stdout)
+                console.error("CLI failed:", requestId, stderr || stdout)
+                if (requestId === "retrieve") {
+                    // A failed retrieval says so; it must not pass for an
+                    // empty category.
+                    retrievalError = firstLine(stderr) || "Retrieval failed"
+                    searchResults = []
+                }
                 loading = false
                 return
             }
@@ -67,14 +84,15 @@ ApplicationWindow {
                 } catch (e) {
                     console.error("Failed to parse sources:", e)
                 }
-            } else if (requestId === "search") {
+            } else if (requestId === "retrieve") {
                 try {
                     var data = JSON.parse(stdout)
                     searchResults = data.results || []
                     searchView.hasMore = data.has_more || false
                 } catch (e) {
-                    console.error("Failed to parse search:", e)
+                    console.error("Failed to parse results:", e)
                     searchResults = []
+                    retrievalError = "Could not read the retrieval's output"
                 }
                 loading = false
             } else if (requestId.startsWith("fav-")) {
@@ -88,6 +106,11 @@ ApplicationWindow {
                 }
             }
         }
+    }
+
+    function firstLine(text) {
+        if (!text) return ""
+        return text.split("\n")[0].trim()
     }
 
     // Global keyboard handler for GRID/PREVIEW modes
@@ -129,6 +152,9 @@ ApplicationWindow {
         } else if (event.key === Qt.Key_F) {
             if (selectedIndex >= 0) favoriteItem(selectedIndex)
             event.accepted = true
+        } else if (event.key === Qt.Key_C) {
+            if (categoryBar.visible) keyboardMode = "BROWSE"
+            event.accepted = true
         } else if (event.key === Qt.Key_I || event.key === Qt.Key_Slash) {
             keyboardMode = "SEARCH"
             event.accepted = true
@@ -141,7 +167,9 @@ ApplicationWindow {
         } else if (event.key === Qt.Key_PageUp) {
             filterBar.prevPage()
             event.accepted = true
-        } else if (event.key >= Qt.Key_1 && event.key <= Qt.Key_4) {
+        } else if (event.key >= Qt.Key_1 && event.key <= Qt.Key_9) {
+            // Every configured source is reachable by number, browsed ones
+            // included — selecting one opens its category bar.
             var idx = event.key - Qt.Key_1
             if (idx < sourceList.length) {
                 filterBar.selectSource(sourceList[idx].name)
@@ -178,24 +206,25 @@ ApplicationWindow {
         }
     }
 
-    function executeSearch(query, source, page, aspect) {
-        loading = true
+    function clearResults() {
+        searchResults = []
+        searchView.hasMore = false
         selectedIndex = -1
-        var args = ["search"]
-        if (query && query.length > 0) args.push(query)
-        if (source && source !== "All") {
-            args.push("--source")
-            args.push(source)
-        }
-        args.push("--page")
-        args.push(page.toString())
-        args.push("--per-page")
-        args.push("24")
-        if (aspect && aspect !== "all") {
-            args.push("--aspect")
-            args.push(aspect)
-        }
-        CLI.run("search", args)
+        hasRetrieved = false
+        retrievalError = ""
+    }
+
+    // Issue one retrieval. Which verb answers — search or browse — follows from
+    // the selected source's declared retrieval mode.
+    function retrieve(req) {
+        var args = Retrieval.args(sourceList, req)
+        if (!args) return
+
+        loading = true
+        hasRetrieved = true
+        retrievalError = ""
+        selectedIndex = -1
+        CLI.run("retrieve", args)
     }
 
     function favoriteItem(idx) {
@@ -213,6 +242,15 @@ ApplicationWindow {
         FilterBar {
             id: filterBar
             Layout.fillWidth: true
+        }
+
+        CategoryBar {
+            id: categoryBar
+            Layout.fillWidth: true
+            visible: filterBar.isBrowsedSource && filterBar.activeCategories.length > 0
+            categories: filterBar.activeCategories
+            activeCategory: filterBar.activeCategory
+            onSelected: function(slug) { filterBar.selectCategory(slug) }
         }
 
         SearchView {

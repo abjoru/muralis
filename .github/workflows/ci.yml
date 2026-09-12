@@ -48,3 +48,6 @@ jobs:
 
       - name: Run tests
         run: cargo test --workspace
+
+      - name: Run GUI logic tests
+        run: ctest --test-dir muralis-gui/build --output-on-failure

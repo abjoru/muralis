@@ -2,6 +2,7 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Controls.Material
 import QtQuick.Layouts
+import "Retrieval.js" as Retrieval
 
 Rectangle {
     id: root
@@ -13,6 +14,17 @@ Rectangle {
     property string activeSource: "All"
     property int currentPage: 1
     property string activeAspect: "all"
+    property string activeCategory: ""
+
+    // Sources split on their declared retrieval mode, reported by `sources
+    // list` — never on a source-type name.
+    readonly property var searchedSources: Retrieval.searched(window.sourceList)
+    readonly property var browsedSources: Retrieval.browsed(window.sourceList)
+    readonly property bool isBrowsedSource: Retrieval.isBrowsedName(window.sourceList, activeSource)
+    readonly property var activeCategories: Retrieval.categoriesOf(window.sourceList, activeSource)
+
+    // A browsed source has no query dimension, so it is offered none.
+    readonly property bool queryVisible: !isBrowsedSource
 
     function focusSearch() {
         searchField.forceActiveFocus()
@@ -22,61 +34,64 @@ Rectangle {
         searchField.text = ""
     }
 
+    function retrieve() {
+        window.retrieve({
+            source: activeSource,
+            query: searchField.text,
+            category: activeCategory,
+            page: currentPage,
+            perPage: 24,
+            aspect: activeAspect
+        })
+    }
+
     function executeSearch() {
         if (searchField.text.length > 0 || activeAspect !== "all") {
             currentPage = 1
-            window.executeSearch(searchField.text, activeSource, currentPage, activeAspect)
+            retrieve()
         }
     }
 
     function nextPage() {
         if (searchView.hasMore) {
             currentPage++
-            window.executeSearch(searchField.text, activeSource, currentPage, activeAspect)
+            retrieve()
         }
     }
 
     function prevPage() {
         if (currentPage > 1) {
             currentPage--
-            window.executeSearch(searchField.text, activeSource, currentPage, activeAspect)
+            retrieve()
         }
-    }
-
-    property var apiSources: {
-        var result = []
-        for (var i = 0; i < window.sourceList.length; i++)
-            if (window.sourceList[i].source_type !== "feed")
-                result.push(window.sourceList[i])
-        return result
-    }
-
-    property var feedSources: {
-        var result = []
-        for (var i = 0; i < window.sourceList.length; i++)
-            if (window.sourceList[i].source_type === "feed")
-                result.push(window.sourceList[i])
-        return result
-    }
-
-    property bool isFeedSource: {
-        if (activeSource === "All") return false
-        for (var i = 0; i < feedSources.length; i++)
-            if (feedSources[i].name === activeSource) return true
-        return false
     }
 
     function selectSource(name) {
         activeSource = name
-        // Reset feed combo when selecting non-feed source
-        if (!isFeedSource) feedCombo.currentIndex = 0
-        // Feeds load immediately, others need query or aspect
-        if (isFeedSource) {
-            currentPage = 1
-            window.executeSearch("", activeSource, 1, "all")
-        } else if (searchField.text.length > 0 || activeAspect !== "all") {
-            executeSearch()
+        activeCategory = ""
+        currentPage = 1
+
+        if (!isBrowsedSource) {
+            browsedCombo.currentIndex = 0
+            if (searchField.text.length > 0 || activeAspect !== "all") retrieve()
+            return
         }
+
+        window.clearResults()
+        if (activeCategories.length === 0) {
+            // A feed publishes no category: selecting it is the selection.
+            retrieve()
+        } else {
+            // A categorised source retrieves nothing until a category is named.
+            window.keyboardMode = "BROWSE"
+        }
+    }
+
+    function selectCategory(slug) {
+        activeCategory = slug
+        currentPage = 1
+        retrieve()
+        window.keyboardMode = "GRID"
     }
 
     RowLayout {
@@ -85,12 +100,12 @@ Rectangle {
         anchors.rightMargin: Theme.spacingL
         spacing: Theme.spacingS
 
-        // Source chip buttons (API sources only)
+        // Source chip buttons (searched sources + "All")
         Repeater {
             model: {
                 var items = [{ name: "All" }]
-                for (var i = 0; i < root.apiSources.length; i++)
-                    items.push(root.apiSources[i])
+                for (var i = 0; i < root.searchedSources.length; i++)
+                    items.push(root.searchedSources[i])
                 return items
             }
 
@@ -118,17 +133,17 @@ Rectangle {
             }
         }
 
-        // Feed source dropdown
+        // Browsed source selector
         ComboBox {
-            id: feedCombo
-            visible: root.feedSources.length > 0
+            id: browsedCombo
+            visible: root.browsedSources.length > 0
             Layout.preferredHeight: 32
             Layout.alignment: Qt.AlignVCenter
             font.pixelSize: 13
             model: {
-                var items = ["Feeds..."]
-                for (var i = 0; i < root.feedSources.length; i++)
-                    items.push(root.feedSources[i].name)
+                var items = ["Browse..."]
+                for (var i = 0; i < root.browsedSources.length; i++)
+                    items.push(root.browsedSources[i].name)
                 return items
             }
             Material.accent: Theme.primary
@@ -144,7 +159,7 @@ Rectangle {
         // Search field
         TextField {
             id: searchField
-            visible: !root.isFeedSource
+            visible: root.queryVisible
             Layout.preferredWidth: 300
             Layout.preferredHeight: 32
             Layout.alignment: Qt.AlignVCenter
@@ -175,9 +190,9 @@ Rectangle {
                 id: debounce
                 interval: 300
                 onTriggered: {
-                    if (searchField.text.length > 0) {
+                    if (searchField.text.length > 0 && root.queryVisible) {
                         root.currentPage = 1
-                        window.executeSearch(searchField.text, root.activeSource, 1, root.activeAspect)
+                        root.retrieve()
                     }
                 }
             }
@@ -205,7 +220,7 @@ Rectangle {
         // Aspect ratio filter
         ComboBox {
             id: aspectCombo
-            visible: !root.isFeedSource
+            visible: root.queryVisible
             Layout.preferredHeight: 32
             Layout.alignment: Qt.AlignVCenter
             model: ["All", "16:9", "21:9", "32:9", "16:10", "4:3", "3:2"]
@@ -218,9 +233,9 @@ Rectangle {
                     "32:9": "32x9", "16:10": "16x10", "4:3": "4x3", "3:2": "3x2"
                 }
                 root.activeAspect = map[currentText] || "all"
-                if (searchField.text.length > 0 || root.activeAspect !== "all") {
+                if (root.queryVisible && (searchField.text.length > 0 || root.activeAspect !== "all")) {
                     root.currentPage = 1
-                    window.executeSearch(searchField.text, root.activeSource, 1, root.activeAspect)
+                    root.retrieve()
                 }
             }
         }

@@ -1,6 +1,7 @@
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Controls.Material
+import "Retrieval.js" as Retrieval
 
 Item {
     id: root
@@ -9,6 +10,15 @@ Item {
     property int columns: Math.max(3, Math.min(8, Math.floor(gridWidth / 200)))
     property real cellSize: gridWidth / columns
     property bool hasMore: false
+
+    readonly property var message: Retrieval.gridMessage(window.sourceList, {
+        source: filterBar.activeSource,
+        category: filterBar.activeCategory,
+        loading: window.loading,
+        retrieved: window.hasRetrieved,
+        resultCount: window.searchResults.length,
+        error: window.retrievalError
+    })
 
     GridView {
         id: grid
@@ -44,12 +54,16 @@ Item {
             policy: ScrollBar.AsNeeded
         }
 
-        // Empty state
+        // Empty, awaiting-a-category and failed states — each distinct from
+        // the loading indicator below.
         Label {
             anchors.centerIn: parent
-            visible: !window.loading && window.searchResults.length === 0
-            text: "Search for wallpapers to get started"
-            color: Theme.withAlpha(Theme.surfaceText, 0.5)
+            width: parent.width - Theme.spacingXL * 2
+            horizontalAlignment: Text.AlignHCenter
+            wrapMode: Text.WordWrap
+            visible: text.length > 0 && window.searchResults.length === 0
+            text: root.message.text
+            color: root.message.isError ? Theme.error : Theme.withAlpha(Theme.surfaceText, 0.5)
             font.pixelSize: 16
         }
 

@@ -21,7 +21,7 @@
 - **Plugin Architecture**: Add new sources by implementing a single trait
 - **Display Modes**: Static, Random, Sequential, Workspace-aware, Scheduled
 - **Favorites System**: SHA-256 deduplication, SQLite metadata, persistent library
-- **GUI**: Qt6/QML browser with source chips, feed dropdown, thumbnail grid, preview drawer
+- **GUI**: Qt6/QML browser with source chips, browsed-source dropdown, category bar, thumbnail grid, preview drawer
 - **Daemon**: Background service with IPC and workspace listener
 - **CLI**: Full daemon control via Unix socket
 - **Content-Safety Ceiling**: One global knob gates every source; nothing NSFW surfaces by default
@@ -100,11 +100,13 @@ muralis-gui --query "landscape"      # Launch with initial search
 ```
 
 The GUI provides:
-- Source chips for API sources, dropdown for feed sources
+- Source chips for searched sources, a dropdown for browsed ones
+- A category bar for a browsed source that publishes categories; selecting a
+  category loads its first page (a feed publishes none — selecting it loads)
 - Thumbnail grid with adaptive columns
 - Preview drawer with metadata and actions
 - One-click favoriting (downloads full image, deduplicates by SHA-256)
-- Keyboard-driven navigation (grid/search/preview modes)
+- Keyboard-driven navigation (search/browse/grid/preview modes)
 
 ## Configuration
 

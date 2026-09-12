@@ -1,4 +1,4 @@
-.PHONY: all rust gui clean install
+.PHONY: all rust gui test clean install
 
 all: rust gui
 
@@ -8,6 +8,10 @@ rust:
 gui:
 	cmake -B muralis-gui/build -S muralis-gui -DCMAKE_BUILD_TYPE=Release -Wno-dev
 	cmake --build muralis-gui/build
+
+test: gui
+	cargo test --workspace
+	ctest --test-dir muralis-gui/build --output-on-failure
 
 clean:
 	cargo clean

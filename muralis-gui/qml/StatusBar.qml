@@ -97,8 +97,12 @@ Rectangle {
                 switch (window.keyboardMode) {
                 case "SEARCH":
                     return "Enter:search  Tab:grid  Esc:clear"
+                case "BROWSE":
+                    return "h/l:category  Enter:load  Esc:grid  q:quit"
                 case "GRID":
-                    return "hjkl:nav  Enter:preview  f:fav  PgDn/PgUp:page  /:search  q:quit"
+                    return (categoryBar.visible ? "c:categories  " : "")
+                        + "hjkl:nav  Enter:preview  f:fav  PgDn/PgUp:page"
+                        + (filterBar.queryVisible ? "  /:search" : "") + "  q:quit"
                 case "PREVIEW":
                     return "h/l:prev/next  f:fav  o:open  Esc:close"
                 default:

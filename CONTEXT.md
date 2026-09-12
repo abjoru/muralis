@@ -69,6 +69,10 @@ A one-host **RestSource** (own crate, like wallhaven). Minimal config: `enabled`
 The **Browsed Source** for ultrawidewallpapers.net (`muralis-source-ultrawide`), and the first Source to publish **Categories**. Emphatically *not* a **RestSource**: the site has no REST/JSON API, no feed and no text search, so there is no paged JSON for a **Source Descriptor** to drive and no query dimension to expose. Its nearest sibling is the **Feed Source** — non-REST, parsing markup, browsed. One `[sources.ultrawide]` subsection, `enabled = false` by default, with an optional `categories` slug list replacing the **Shipped categories**.
 _Avoid_: scraper source, ultrawide plugin (reserve "plugin" for the crate), UWW
 
+**Category bar**:
+The GUI's presentation of a **Browsed Source**'s **Categories**, below the filter bar, by display label. Shown only for a Browsed Source that publishes at least one — **Zero categories** shows no bar, because selecting the feed is already the selection. Selecting a category is what retrieves: it issues the **Browse verb** for that slug's first page, the way selecting a feed does for the feed. A Browsed Source is offered no search field and no aspect combo at all, since it has no query dimension to answer them with.
+_Avoid_: category filter (it selects what is retrieved, it does not narrow a result set), tab bar
+
 **Category page**:
 The only navigational dimension ultrawidewallpapers.net has: one URL per slug, listing a fixed, curated set of cards. There is no pagination, no load-more and no detail page behind a card, so a **Category page** is the whole of what a **Category** can return. Logical `page`/`per_page` walk *that* parsed set and then return empty (the established end-of-results signal); the Source never reaches for a page the site does not publish. It is fetched once per user-initiated selection — never speculatively, never on a timer.
 
@@ -280,6 +284,7 @@ _Avoid_: API, treating it as the Consumer seam (that is the **IPC contract**)
 - The **Feed Source** is a **Source** but never a **RestSource**.
 - Every **Source** declares a **Retrieval mode**; `SourceRegistry::searched()` yields only the **Searched** ones, so the unscoped-search call site cannot forget to filter and let a **Browsed Source** leak into a query's answer.
 - A **Browsed Source** publishes zero or more **Categories**; a **Searched Source** publishes none.
+- The GUI partitions its filter bar on the declared **Retrieval mode**: **Searched Sources** are chips beside "All", **Browsed Sources** live in a selector, and a Browsed Source's **Categories** are a bar of their own below it. Nothing in the GUI branches on a **Source**'s type name.
 - `browse` and `search` render **Previews** through one function, so their output shapes cannot drift apart.
 - The `SourceRegistry` holds **Sources** (any mix of **RestSource**, **Booru Source**, **Pixabay Source**, **Feed Source**).
 - `create_sources` takes a **SourceContext** (global cross-cutting knobs: **Content Safety policy**, `min_width`/`min_height`) in addition to the `[sources]` table + client. The contract is the same for every plugin.
@@ -304,7 +309,8 @@ _Avoid_: API, treating it as the Consumer seam (that is the **IPC contract**)
 
 ## Flagged ambiguities
 
-- the searched/browsed distinction was already load-bearing before it was named: the GUI partitioned its filter bar by comparing `source_type` against the literal string `"feed"`, and avoided the unfiltered-feed defect only by never firing an empty-query "All" search. Resolved: it is a **Retrieval mode** declared by the Source and reported by `sources list`. The QML string test is stale but still present — it is retired in a later slice, and until then the GUI's feed dropdown issues a `search --source <feed>` that now refuses.
+- the searched/browsed distinction was already load-bearing before it was named: the GUI partitioned its filter bar by comparing `source_type` against the literal string `"feed"`, and avoided the unfiltered-feed defect only by never firing an empty-query "All" search. Resolved: it is a **Retrieval mode** declared by the Source and reported by `sources list`. The QML string test is now retired — the GUI partitions on the declared mode and reaches a Browsed Source through the **Browse verb**.
+- favoriting a **Browsed Source**'s result from the GUI does not work, and did not before this slice either: the GUI favorites by `source_url`, and no Browsed Source resolves the `source_url` it emits — the **Feed Source** emits the post's page URL and implements no `resolve_url`, the **Ultrawide Source** emits the **Category page** URL, which names a page rather than an image. `favorites add` on the Ultrawide **Master** URL works, so the gap is which URL identifies a browsed **Preview**, not the keeping itself. Unresolved; tracked as a separate issue, and out of scope for a presentation slice.
 
 - "filter" was used for both the user's aspect choice and the act of discarding non-matching **Previews** — resolved: the choice is `AspectRatioFilter`; the act is part of **Page-filling**.
 - aspect filtering previously lived in the CLI caller (`main.rs:230`); it now lives in each **Source**: **RestSource** filters via **Page-filling**, and the **Feed Source** filters after resolving dimensions. The CLI no longer post-filters at all — every **Source** honors the aspect contract itself.

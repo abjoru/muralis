@@ -13,7 +13,8 @@ public:
     Q_INVOKABLE void run(const QString &requestId, const QStringList &args);
 
 signals:
-    void finished(const QString &requestId, const QString &stdoutData, int exitCode);
+    void finished(const QString &requestId, const QString &stdoutData,
+                  const QString &stderrData, int exitCode);
 };
 
 #endif // PROCESSRUNNER_H
