@@ -5,6 +5,7 @@ use tokio::net::UnixListener;
 use tokio::sync::{broadcast, mpsc, oneshot};
 use tracing::{info, warn};
 
+use muralis_core::error::IoAt as _;
 use muralis_core::ipc::{DaemonEvent, IpcRequest, IpcResponse};
 
 use crate::display::DaemonCommand;
@@ -20,7 +21,7 @@ pub async fn serve_ipc(
 ) -> anyhow::Result<()> {
     // clean up stale socket
     if socket_path.exists() {
-        std::fs::remove_file(&socket_path)?;
+        std::fs::remove_file(&socket_path).at("remove", &socket_path)?;
     }
 
     let listener = UnixListener::bind(&socket_path)?;

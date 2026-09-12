@@ -43,10 +43,26 @@ impl Default for Config {
 }
 
 impl Config {
+    /// The config as it is on disk — or the defaults, when there is no file
+    /// yet.
+    ///
+    /// A machine nobody has configured is not a broken one: a **Source** list
+    /// that holds only what ships enabled is the honest answer to `sources
+    /// list` on a fresh install, not an error about a file the user was never
+    /// asked to write. A file that *exists* and will not parse is still a
+    /// failure — defaulting past that would hide the typo that caused it.
     pub fn load(paths: &MuralisPaths) -> Result<Self> {
         let path = paths.config_file();
-        let content = std::fs::read_to_string(&path)
-            .map_err(|e| MuralisError::Config(format!("failed to read {}: {e}", path.display())))?;
+        let content = match std::fs::read_to_string(&path) {
+            Ok(content) => content,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Self::default()),
+            Err(e) => {
+                return Err(MuralisError::Config(format!(
+                    "failed to read {}: {e}",
+                    path.display()
+                )))
+            }
+        };
         let config: Self = toml::from_str(&content)?;
         Ok(config)
     }

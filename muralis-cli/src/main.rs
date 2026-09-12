@@ -14,7 +14,7 @@ use muralis_core::sources::{
 use muralis_core::wallpapers::WallpaperManager;
 
 #[derive(Parser)]
-#[command(name = "muralis", about = "Wallpaper manager for Hyprland")]
+#[command(name = "muralis", version, about = "Wallpaper manager for Hyprland")]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -365,6 +365,27 @@ fn browse_target<'a>(registry: &'a SourceRegistry, name: &str) -> Result<&'a dyn
     Ok(src)
 }
 
+/// The XDG locations this invocation reads and writes, with the directories
+/// in place.
+///
+/// The CLI is not merely a client of the daemon — it opens the database
+/// itself and writes wallpaper files itself, and the **CLI contract** promises
+/// the **Library** reads with the daemon down. So it cannot borrow the
+/// daemon's startup for directories it depends on: the first keep on a
+/// CLI-first machine died on a directory nobody had created. Creating them is
+/// correct rather than a fallback — these are muralis's own locations and
+/// nothing else owns them — and it is idempotent, so the CLI and the daemon
+/// starting at once is a race neither loses.
+///
+/// Called only from commands that touch those locations. `--help` and
+/// `--version` are answered by clap before this runs, and the IPC commands
+/// resolve nothing but the socket.
+fn ensured_paths() -> Result<MuralisPaths> {
+    let paths = MuralisPaths::new()?;
+    paths.ensure_dirs()?;
+    Ok(paths)
+}
+
 fn build_registry(config: &Config) -> Result<(SourceRegistry, reqwest::Client)> {
     let client = reqwest::Client::builder()
         .user_agent(muralis_core::http::user_agent())
@@ -449,7 +470,7 @@ async fn main() -> Result<()> {
             per_page,
             aspect,
         } => {
-            let paths = MuralisPaths::new()?;
+            let paths = ensured_paths()?;
             let config = Config::load(&paths)?;
             let (registry, _) = build_registry(&config)?;
             let db = Database::open(&paths.db_path())?;
@@ -481,7 +502,7 @@ async fn main() -> Result<()> {
             per_page,
             aspect,
         } => {
-            let paths = MuralisPaths::new()?;
+            let paths = ensured_paths()?;
             let config = Config::load(&paths)?;
             let (registry, _) = build_registry(&config)?;
             let db = Database::open(&paths.db_path())?;
@@ -512,7 +533,7 @@ async fn main() -> Result<()> {
                 let wallpapers = match library_from_daemon(served) {
                     Some(wallpapers) => wallpapers,
                     None => {
-                        let paths = MuralisPaths::new()?;
+                        let paths = ensured_paths()?;
                         let db = Database::open(&paths.db_path())?;
                         db.list_wallpapers()?
                     }
@@ -520,7 +541,7 @@ async fn main() -> Result<()> {
                 println!("{}", serde_json::to_string(&wallpapers)?);
             }
             FavoritesAction::Stats => {
-                let paths = MuralisPaths::new()?;
+                let paths = ensured_paths()?;
                 let db = Database::open(&paths.db_path())?;
                 let count = db.wallpaper_count()?;
                 let disk_usage = dir_size(&paths.wallpapers_dir());
@@ -528,7 +549,7 @@ async fn main() -> Result<()> {
                 println!("disk usage: {}", format_bytes(disk_usage));
             }
             FavoritesAction::Add { url } => {
-                let paths = MuralisPaths::new()?;
+                let paths = ensured_paths()?;
                 let config = Config::load(&paths)?;
                 let (registry, _) = build_registry(&config)?;
                 let db = Database::open(&paths.db_path())?;
@@ -574,7 +595,7 @@ async fn main() -> Result<()> {
                 };
                 let preview = preview_from_json(&raw)?;
 
-                let paths = MuralisPaths::new()?;
+                let paths = ensured_paths()?;
                 let config = Config::load(&paths)?;
                 let (registry, _) = build_registry(&config)?;
                 let db = Database::open(&paths.db_path())?;
@@ -598,7 +619,7 @@ async fn main() -> Result<()> {
         },
         Commands::Sources { action } => match action {
             SourcesAction::List => {
-                let paths = MuralisPaths::new()?;
+                let paths = ensured_paths()?;
                 let config = Config::load(&paths)?;
                 let (registry, _) = build_registry(&config)?;
 
@@ -607,7 +628,7 @@ async fn main() -> Result<()> {
             }
         },
         Commands::Cache { action } => {
-            let paths = MuralisPaths::new()?;
+            let paths = ensured_paths()?;
             match action {
                 CacheAction::Stats => {
                     let stats = muralis_core::cache::cache_stats(&paths);

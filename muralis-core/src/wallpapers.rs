@@ -6,7 +6,7 @@ use image::ImageReader;
 use sha2::{Digest, Sha256};
 
 use crate::db::Database;
-use crate::error::{MuralisError, Result};
+use crate::error::{IoAt as _, MuralisError, Result};
 use crate::models::{SourceType, Wallpaper, WallpaperPreview};
 use crate::paths::MuralisPaths;
 
@@ -38,7 +38,7 @@ impl WallpaperManager {
 
         let ext = guess_extension(data);
         let file_path = self.paths.wallpapers_dir().join(format!("{hash}.{ext}"));
-        std::fs::write(&file_path, data)?;
+        std::fs::write(&file_path, data).at("write", &file_path)?;
 
         // generate thumbnail
         self.generate_thumbnail(data, &hash)?;
@@ -86,13 +86,13 @@ impl WallpaperManager {
         // delete wallpaper file
         let wp_path = Path::new(&wp.file_path);
         if wp_path.exists() {
-            std::fs::remove_file(wp_path)?;
+            std::fs::remove_file(wp_path).at("remove", wp_path)?;
         }
 
         // delete thumbnail
         let thumb_path = self.thumbnail_path(id);
         if thumb_path.exists() {
-            std::fs::remove_file(thumb_path)?;
+            std::fs::remove_file(&thumb_path).at("remove", &thumb_path)?;
         }
 
         db.delete_wallpaper(id)?;
@@ -125,7 +125,7 @@ impl WallpaperManager {
             return Err(MuralisError::FileNotFound(path.to_path_buf()));
         }
 
-        let data = std::fs::read(path)?;
+        let data = std::fs::read(path).at("read", path)?;
         let hash = sha256_hex(&data);
 
         if db.wallpaper_exists(&hash)? {
@@ -134,7 +134,7 @@ impl WallpaperManager {
 
         let ext = guess_extension(&data);
         let dest = self.paths.wallpapers_dir().join(format!("{hash}.{ext}"));
-        std::fs::copy(path, &dest)?;
+        std::fs::copy(path, &dest).at("write", &dest)?;
 
         self.generate_thumbnail(&data, &hash)?;
 
@@ -170,8 +170,18 @@ impl WallpaperManager {
             (THUMBNAIL_WIDTH as f64 / img.width() as f64 * img.height() as f64) as u32;
         let thumb = img.resize_exact(THUMBNAIL_WIDTH, thumb_height, FilterType::Lanczos3);
 
+        // The encoder's own IO error carries no path, so an unwritable
+        // thumbnails directory would report as bare an errno as a raw
+        // `fs::write` did. Encoding failures stay image errors.
         let thumb_path = self.thumbnail_path(hash);
-        thumb.save(&thumb_path)?;
+        thumb.save(&thumb_path).map_err(|e| match e {
+            image::ImageError::IoError(cause) => MuralisError::IoAt {
+                op: "write",
+                path: thumb_path.clone(),
+                cause,
+            },
+            other => other.into(),
+        })?;
         Ok(())
     }
 }
@@ -205,6 +215,84 @@ fn guess_extension(data: &[u8]) -> &'static str {
 mod tests {
     use super::*;
     use crate::db::Database;
+
+    /// A throwaway XDG root, with nothing under it. Nothing calls
+    /// `ensure_dirs` here on purpose: this is the machine the daemon has
+    /// never run on.
+    fn bare_root() -> (MuralisPaths, tempfile::TempDir) {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = MuralisPaths {
+            config_dir: tmp.path().join("config"),
+            data_dir: tmp.path().join("data"),
+            cache_dir: tmp.path().join("cache"),
+        };
+        (paths, tmp)
+    }
+
+    fn a_jpeg() -> Vec<u8> {
+        let img = image::RgbImage::new(64, 32);
+        let mut buf = Vec::new();
+        img.write_to(&mut Cursor::new(&mut buf), image::ImageFormat::Jpeg)
+            .unwrap();
+        buf
+    }
+
+    fn a_preview() -> WallpaperPreview {
+        WallpaperPreview {
+            source_type: SourceType::new("wallhaven"),
+            source_id: "test_001".into(),
+            source_url: "https://example.com".into(),
+            thumbnail_url: "https://example.com/thumb.jpg".into(),
+            full_url: "https://example.com/full.jpg".into(),
+            width: 64,
+            height: 32,
+            tags: vec!["test".into()],
+        }
+    }
+
+    /// The defect's headline symptom: keeping on a machine whose directories
+    /// do not exist yet failed with a bare `No such file or directory (os
+    /// error 2)` — naming neither the operation nor the location, and
+    /// mistaken each time for a fault in whatever tripped it.
+    #[test]
+    fn a_keep_that_cannot_write_names_the_file_it_meant_to_write() {
+        let (paths, _tmp) = bare_root();
+        let wallpapers_dir = paths.wallpapers_dir();
+        let db = Database::open_in_memory().unwrap();
+        let manager = WallpaperManager::new(paths);
+
+        let err = manager
+            .favorite(&db, &a_preview(), &a_jpeg())
+            .expect_err("there is no directory to write into");
+
+        let message = err.to_string();
+        assert!(
+            message.contains(&wallpapers_dir.display().to_string()),
+            "a user must be able to see which directory is missing: {message}"
+        );
+    }
+
+    /// The keep path writes twice, and the second write goes through the
+    /// image encoder — whose own IO error is just as unqualified as the
+    /// first's was.
+    #[test]
+    fn a_thumbnail_that_cannot_be_written_names_its_path() {
+        let (paths, _tmp) = bare_root();
+        std::fs::create_dir_all(paths.wallpapers_dir()).unwrap();
+        let thumbnails_dir = paths.thumbnails_dir();
+        let db = Database::open_in_memory().unwrap();
+        let manager = WallpaperManager::new(paths);
+
+        let err = manager
+            .favorite(&db, &a_preview(), &a_jpeg())
+            .expect_err("there is no thumbnails directory to write into");
+
+        let message = err.to_string();
+        assert!(
+            message.contains(&thumbnails_dir.display().to_string()),
+            "an encoder's errno is no more actionable than the filesystem's: {message}"
+        );
+    }
 
     #[test]
     fn test_sha256_hex() {
