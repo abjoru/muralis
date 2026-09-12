@@ -3,6 +3,7 @@ import QtQuick.Controls
 import QtQuick.Controls.Material
 import QtQuick.Layouts
 import QtQuick.Window
+import "Retrieval.js" as Retrieval
 
 Drawer {
     id: root
@@ -22,12 +23,16 @@ Drawer {
         }
     }
 
-    property var currentItem: null
+    // Which result is previewed, not a copy of it. The Preview reads the same
+    // model the grid renders, so a keep that replaces the result is observed
+    // here too and the two surfaces cannot disagree.
+    property int index: -1
+    readonly property var currentItem: Retrieval.itemAt(window.searchResults, index)
     property bool showMonitorOverlay: true
 
     function openPreview(idx) {
         if (idx >= 0 && idx < window.searchResults.length) {
-            currentItem = window.searchResults[idx]
+            index = idx
             open()
         }
     }
@@ -254,11 +259,7 @@ Drawer {
                 Material.background: Theme.primaryContainer
                 Material.foreground: Theme.surfaceText
 
-                onClicked: {
-                    if (window.selectedIndex >= 0) {
-                        window.favoriteItem(window.selectedIndex)
-                    }
-                }
+                onClicked: window.favoriteItem(root.index)
             }
 
             Button {
@@ -272,6 +273,17 @@ Drawer {
                     }
                 }
             }
+        }
+
+        // A keep that failed says so here, where the button that issued it
+        // sits, and only for the result it failed on.
+        Label {
+            Layout.fillWidth: true
+            visible: window.keepErrorIndex === root.index && window.keepError.length > 0
+            text: window.keepError
+            color: Theme.error
+            font.pixelSize: 12
+            wrapMode: Text.Wrap
         }
 
         // Spacer

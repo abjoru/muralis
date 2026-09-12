@@ -82,6 +82,27 @@ function keepArgs(item) {
     return ["favorites", "keep", JSON.stringify(item)]
 }
 
+// The result at an index, or null when there is none. The Preview reads the
+// grid's model through this rather than holding a result of its own, so one
+// favorited state serves both surfaces.
+function itemAt(results, idx) {
+    if (!results || idx < 0 || idx >= results.length) return null
+    return results[idx]
+}
+
+// A successful keep, applied to the model. The kept result is replaced rather
+// than written through: a field set inside a JavaScript object notifies no QML
+// binding, so the Preview would go on offering to keep what is already kept.
+// An index naming no result leaves the model exactly as it was.
+function markKept(results, idx) {
+    if (!results || idx < 0 || idx >= results.length) return results
+    var out = results.slice()
+    var kept = Object.assign({}, results[idx])
+    kept.is_favorited = true
+    out[idx] = kept
+    return out
+}
+
 // The display label for a category slug, falling back to the slug itself so an
 // unlabelled category is still nameable.
 function labelOf(sourceList, sourceName, slug) {

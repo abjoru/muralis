@@ -332,6 +332,7 @@ _Avoid_: API, treating it as the Consumer seam (that is the **IPC contract**)
 - A gelbooru **Flavor** instance points at any gelbooru-clone host by `base` (gelbooru, rule34, safebooru, realbooru) — multi-host for free.
 - A **Preview** becomes a **Wallpaper** when kept; the **Library** is every Wallpaper. Nothing distinguishes Wallpapers within the Library — there is no favorite flag.
 - The GUI **keeps** by handing the whole **Preview** to the CLI, for every result alike — it never keeps by URL and never branches on **Retrieval mode** to decide. A **Source** is found for a Preview by its `source_type`, never by the name a UI renders.
+- Every GUI surface reads one result model: the grid renders the result array and the preview drawer reads the *same* array by index, never a copy of a result. A **keep** that succeeds replaces the result in that array, so the card's badge and the drawer's button flip together; writing the field in place would notify no QML binding and leave the two disagreeing about one wallpaper. A keep that fails replaces nothing — the state shown follows the outcome, not the attempt.
 - A **Consumer** (e.g. the **DMS Widget**) depends only on the **IPC contract**; it never links `muralis-core` and never registers as a **Source**.
 - The **Library** has exactly one backing store behind both seams: the daemon answers the **Favorites request** from the database, and `favorites list` falls back to that same database only when the daemon cannot answer.
 - Every **Daemon event** originates inside the daemon: a **Current wallpaper**

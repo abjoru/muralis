@@ -30,6 +30,10 @@ ApplicationWindow {
     // from "nothing found".
     property bool hasRetrieved: false
     property string retrievalError: ""
+    // A keep that failed, and the result it failed on — the Preview reports it
+    // where the button that issued it sits, and nowhere else.
+    property string keepError: ""
+    property int keepErrorIndex: -1
 
     // Load sources on startup
     Component.onCompleted: {
@@ -73,6 +77,11 @@ ApplicationWindow {
                     // empty category.
                     retrievalError = firstLine(stderr) || "Retrieval failed"
                     searchResults = []
+                } else if (requestId.startsWith("fav-")) {
+                    // A keep that failed flips nothing. The state shown
+                    // follows the outcome, not the attempt.
+                    keepError = firstLine(stderr) || "Could not keep this wallpaper"
+                    keepErrorIndex = parseInt(requestId.substring(4))
                 }
                 loading = false
                 return
@@ -96,14 +105,10 @@ ApplicationWindow {
                 }
                 loading = false
             } else if (requestId.startsWith("fav-")) {
-                var idx = parseInt(requestId.substring(4))
-                if (idx >= 0 && idx < searchResults.length) {
-                    var updated = searchResults.slice()
-                    var item = Object.assign({}, updated[idx])
-                    item.is_favorited = true
-                    updated[idx] = item
-                    searchResults = updated
-                }
+                // One update path for both surfaces: the card re-reads the
+                // model and the Preview reads the same model by index, so
+                // neither can hold a stale answer.
+                searchResults = Retrieval.markKept(searchResults, parseInt(requestId.substring(4)))
             }
         }
     }
@@ -212,6 +217,7 @@ ApplicationWindow {
         selectedIndex = -1
         hasRetrieved = false
         retrievalError = ""
+        clearKeepError()
     }
 
     // Issue one retrieval. Which verb answers — search or browse — follows from
@@ -223,15 +229,21 @@ ApplicationWindow {
         loading = true
         hasRetrieved = true
         retrievalError = ""
+        clearKeepError()
         selectedIndex = -1
         CLI.run("retrieve", args)
     }
 
     function favoriteItem(idx) {
-        if (idx < 0 || idx >= searchResults.length) return
-        var argv = Retrieval.keepArgs(searchResults[idx])
+        var argv = Retrieval.keepArgs(Retrieval.itemAt(searchResults, idx))
         if (!argv) return
+        clearKeepError()
         CLI.run("fav-" + idx, argv)
+    }
+
+    function clearKeepError() {
+        keepError = ""
+        keepErrorIndex = -1
     }
 
     // Layout

@@ -147,6 +147,107 @@ TestCase {
                                      is_favorited: true }), null)
     }
 
+    // The Preview reads the result out of the grid's model by index rather
+    // than holding a copy of its own, so the two surfaces cannot hold
+    // different answers about one wallpaper.
+    function test_the_preview_reads_the_result_out_of_the_model() {
+        var results = [{ source_id: "a", is_favorited: false },
+                       { source_id: "b", is_favorited: true }]
+
+        compare(Retrieval.itemAt(results, 1).source_id, "b")
+        compare(Retrieval.itemAt(results, -1), null)
+        compare(Retrieval.itemAt(results, 2), null)
+        compare(Retrieval.itemAt(null, 0), null)
+    }
+
+    // A successful keep replaces the result rather than writing through it: a
+    // field written inside a JavaScript object notifies no QML binding, so the
+    // Preview would go on offering to keep what is already kept.
+    function test_a_keep_replaces_the_result_so_bindings_observe_it() {
+        var results = [{ source_id: "a", is_favorited: false },
+                       { source_id: "b", is_favorited: false }]
+
+        var kept = Retrieval.markKept(results, 0)
+
+        verify(kept !== results, "the model is replaced, not written through")
+        verify(kept[0] !== results[0], "the kept result is replaced, not written through")
+        verify(kept[0].is_favorited)
+        compare(kept[0].source_id, "a")
+        compare(kept[1], results[1])
+        verify(!results[0].is_favorited, "the result the Preview still holds is untouched")
+
+        // What the Preview reads afterwards is the kept one.
+        verify(Retrieval.itemAt(kept, 0).is_favorited)
+    }
+
+    // A keep that names no result leaves the model exactly as it was — the
+    // failure path must not flip anything.
+    function test_keeping_at_no_index_leaves_the_model_alone() {
+        var results = [{ source_id: "a", is_favorited: false }]
+
+        compare(Retrieval.markKept(results, -1), results)
+        compare(Retrieval.markKept(results, 1), results)
+        compare(Retrieval.markKept(null, 0), null)
+    }
+
+    // The Preview's button is a binding onto the model, so what the model does
+    // decides whether the button follows. Replacing the result re-evaluates it;
+    // writing the field in place does not, which is the defect this pins.
+    Component {
+        id: preview
+        QtObject {
+            property var results: []
+            property int index: -1
+            readonly property var previewed: Retrieval.itemAt(results, index)
+            // The favorite button's label and enabled state, both derived from
+            // the one observed state.
+            readonly property bool offersToKeep: !(previewed && previewed.is_favorited)
+        }
+    }
+
+    function test_a_keep_flips_the_preview_s_button_while_it_stays_open() {
+        var p = preview.createObject(null)
+        p.results = [{ source_id: "a", is_favorited: false },
+                     { source_id: "b", is_favorited: false }]
+        p.index = 0
+        verify(p.offersToKeep)
+
+        p.results = Retrieval.markKept(p.results, 0)
+
+        verify(!p.offersToKeep, "the button follows the keep without reopening")
+        verify(p.results[0].is_favorited, "and the grid reads the same model")
+        p.destroy()
+    }
+
+    // Why the keep must replace rather than write through: a field set inside a
+    // JavaScript object notifies nothing, and the button stays wrong.
+    function test_writing_the_field_in_place_notifies_nothing() {
+        var p = preview.createObject(null)
+        p.results = [{ source_id: "a", is_favorited: false }]
+        p.index = 0
+        verify(p.offersToKeep)
+
+        p.results[0].is_favorited = true
+
+        verify(p.offersToKeep, "an in-place write leaves the binding stale")
+        p.destroy()
+    }
+
+    // Navigating to another result and back shows each one's true state.
+    function test_navigating_shows_each_result_s_own_state() {
+        var p = preview.createObject(null)
+        p.results = [{ source_id: "a", is_favorited: false },
+                     { source_id: "b", is_favorited: true }]
+
+        p.index = 0
+        verify(p.offersToKeep)
+        p.index = 1
+        verify(!p.offersToKeep, "an already-kept result shows kept on arrival")
+        p.index = 0
+        verify(p.offersToKeep)
+        p.destroy()
+    }
+
     function fixture() {
         return [
             { name: "Wallhaven", source_type: "wallhaven", retrieval_mode: "searched", categories: [] },
