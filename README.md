@@ -87,6 +87,8 @@ muralis browse <source>     # Retrieve from a browsed source, e.g. a feed (JSON)
 muralis sources list        # List sources with retrieval mode + categories (JSON)
 muralis favorites list      # List all favorites (JSON)
 muralis favorites stats     # Show favorites count and disk usage
+muralis favorites add <url> # Keep a wallpaper from a pasted link
+muralis favorites keep      # Keep a search/browse result (JSON on stdin or as an argument)
 muralis cache stats         # Show cache size
 muralis cache prune         # Prune cache to configured max
 muralis quit                # Stop daemon
@@ -296,6 +298,11 @@ enabled = true
 ```bash
 muralis sources list                                            # slugs it publishes
 muralis browse "Ultrawide Wallpapers" --category 32-9-wallpapers
+
+# Keeping a browsed result: hand the result over, don't paste its source_url —
+# that names the category page, which every wallpaper on it shares.
+muralis browse "Ultrawide Wallpapers" --category space-wallpapers \
+  | jq -c '.results[0]' | muralis favorites keep
 ```
 
 > Every image is a **7680x2160 (32:9) master**, downloaded unaltered — muralis

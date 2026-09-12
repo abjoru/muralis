@@ -229,9 +229,9 @@ ApplicationWindow {
 
     function favoriteItem(idx) {
         if (idx < 0 || idx >= searchResults.length) return
-        var item = searchResults[idx]
-        if (item.is_favorited) return
-        CLI.run("fav-" + idx, ["favorites", "add", item.source_url])
+        var argv = Retrieval.keepArgs(searchResults[idx])
+        if (!argv) return
+        CLI.run("fav-" + idx, argv)
     }
 
     // Layout

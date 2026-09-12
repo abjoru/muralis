@@ -115,6 +115,19 @@ A **Preview** that has been kept: downloaded to disk and recorded as a row in
 (`last_used`, `use_count`) a Preview has no place for.
 _Avoid_: favorite (see **Library**), image, file
 
+**keep (verb)**:
+Turning a **Preview** into a **Wallpaper**. Two entry points, one outcome: a
+human pastes a link (`muralis favorites add <url>`, which asks every **Source**
+to `resolve_url` it), and anything already holding a Preview hands it straight
+over (`muralis favorites keep <result-json>`, reading stdin when the argument is
+omitted). Both download through the Preview's **Source**, hash the bytes and
+write one **Library** row, so what was kept is indistinguishable afterwards and
+the same image kept twice is still one row. The Preview path exists because a
+**Browsed Source**'s `source_url` names a *page*, not an image, and no URL
+round-trip can recover one (ADR 0004).
+_Avoid_: favorite (the command name, not the concept), save, download (that is
+one step of it)
+
 **Library**:
 Every **Wallpaper** on disk — the set the daemon rotates through and a
 **Consumer** displays. There is no curated subset within it: the schema has no
@@ -290,6 +303,7 @@ _Avoid_: API, treating it as the Consumer seam (that is the **IPC contract**)
 - `create_sources` takes a **SourceContext** (global cross-cutting knobs: **Content Safety policy**, `min_width`/`min_height`) in addition to the `[sources]` table + client. The contract is the same for every plugin.
 - A gelbooru **Flavor** instance points at any gelbooru-clone host by `base` (gelbooru, rule34, safebooru, realbooru) — multi-host for free.
 - A **Preview** becomes a **Wallpaper** when kept; the **Library** is every Wallpaper. Nothing distinguishes Wallpapers within the Library — there is no favorite flag.
+- The GUI **keeps** by handing the whole **Preview** to the CLI, for every result alike — it never keeps by URL and never branches on **Retrieval mode** to decide. A **Source** is found for a Preview by its `source_type`, never by the name a UI renders.
 - A **Consumer** (e.g. the **DMS Widget**) depends only on the **IPC contract**; it never links `muralis-core` and never registers as a **Source**.
 - The **Library** has exactly one backing store behind both seams: the daemon answers the **Favorites request** from the database, and `favorites list` falls back to that same database only when the daemon cannot answer.
 - Every **Daemon event** originates inside the daemon: a **Current wallpaper**
@@ -310,7 +324,7 @@ _Avoid_: API, treating it as the Consumer seam (that is the **IPC contract**)
 ## Flagged ambiguities
 
 - the searched/browsed distinction was already load-bearing before it was named: the GUI partitioned its filter bar by comparing `source_type` against the literal string `"feed"`, and avoided the unfiltered-feed defect only by never firing an empty-query "All" search. Resolved: it is a **Retrieval mode** declared by the Source and reported by `sources list`. The QML string test is now retired — the GUI partitions on the declared mode and reaches a Browsed Source through the **Browse verb**.
-- favoriting a **Browsed Source**'s result from the GUI does not work, and did not before this slice either: the GUI favorites by `source_url`, and no Browsed Source resolves the `source_url` it emits — the **Feed Source** emits the post's page URL and implements no `resolve_url`, the **Ultrawide Source** emits the **Category page** URL, which names a page rather than an image. `favorites add` on the Ultrawide **Master** URL works, so the gap is which URL identifies a browsed **Preview**, not the keeping itself. Unresolved; tracked as a separate issue, and out of scope for a presentation slice.
+- which URL identifies a browsed **Preview** for `favorites add`: none does, and that was the wrong question. The **Feed Source** emits the post's page URL and implements no `resolve_url`; the **Ultrawide Source** emits the **Category page** URL, one URL shared by every card on it. Resolved: a Preview is identified by *being* a Preview — `favorites keep` takes the whole result object and never consults `resolve_url`, and the GUI keeps that way for every result, browsed or searched (ADR 0004). `favorites add <url>` is unchanged for a pasted link, including an Ultrawide **Master** URL, and a Source that recognises a URL it cannot make an image of now says so (`explain_unresolvable`) instead of leaving it indistinguishable from a URL nothing recognises.
 
 - "filter" was used for both the user's aspect choice and the act of discarding non-matching **Previews** — resolved: the choice is `AspectRatioFilter`; the act is part of **Page-filling**.
 - aspect filtering previously lived in the CLI caller (`main.rs:230`); it now lives in each **Source**: **RestSource** filters via **Page-filling**, and the **Feed Source** filters after resolving dimensions. The CLI no longer post-filters at all — every **Source** honors the aspect contract itself.

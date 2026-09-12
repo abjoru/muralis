@@ -111,6 +111,42 @@ TestCase {
         verify(!msg.isError)
     }
 
+    // Keeping hands the whole result over, browsed and searched alike: a
+    // browsed result's source_url names the page it came from, which no source
+    // can resolve back to an image. Nothing here branches on retrieval mode.
+    function test_keeping_hands_the_whole_preview_over() {
+        var browsed = { source_type: "ultrawide", source_id: "aishot-5793.jpg",
+                        source_url: "https://www.ultrawidewallpapers.net/space-wallpapers",
+                        thumbnail_url: "https://www.ultrawidewallpapers.net/thumb.php?image=a",
+                        full_url: "https://www.ultrawidewallpapers.net/wallpapers/329/highres/a.jpg",
+                        width: 7680, height: 2160, tags: ["Space Wallpapers"], is_favorited: false }
+
+        var argv = Retrieval.keepArgs(browsed)
+
+        compare(argv.length, 3)
+        compare(argv[0], "favorites")
+        compare(argv[1], "keep")
+        var sent = JSON.parse(argv[2])
+        compare(sent.source_type, "ultrawide")
+        compare(sent.source_id, "aishot-5793.jpg")
+        compare(sent.full_url, browsed.full_url)
+
+        var searchedArgv = Retrieval.keepArgs({ source_type: "wallhaven", source_id: "abc123",
+                                                source_url: "https://wallhaven.cc/w/abc123",
+                                                full_url: "https://w.wallhaven.cc/full/abc123.jpg" })
+        compare(searchedArgv[1], "keep")
+        compare(JSON.parse(searchedArgv[2]).source_id, "abc123")
+    }
+
+    // There is nothing to keep when there is no result, or when this one is
+    // already in the library.
+    function test_keeping_nothing_or_something_already_kept_issues_nothing() {
+        compare(Retrieval.keepArgs(null), null)
+        compare(Retrieval.keepArgs({ source_type: "feed", source_id: "a",
+                                     full_url: "https://example.com/a.jpg",
+                                     is_favorited: true }), null)
+    }
+
     function fixture() {
         return [
             { name: "Wallhaven", source_type: "wallhaven", retrieval_mode: "searched", categories: [] },

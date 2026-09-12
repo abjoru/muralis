@@ -72,6 +72,16 @@ function args(sourceList, req) {
     return ["search"].concat(query, source, page, aspect)
 }
 
+// The CLI argv for keeping one result. The whole Preview goes over, exactly as
+// `search`/`browse` emitted it — a browsed result's source_url names the page
+// it came from, which no source can resolve back to an image, and we hold every
+// field already. Returns null when there is nothing to keep: no result, or one
+// the library already has.
+function keepArgs(item) {
+    if (!item || item.is_favorited) return null
+    return ["favorites", "keep", JSON.stringify(item)]
+}
+
 // The display label for a category slug, falling back to the slug itself so an
 // unlabelled category is still nameable.
 function labelOf(sourceList, sourceName, slug) {

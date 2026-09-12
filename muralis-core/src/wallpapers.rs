@@ -223,6 +223,53 @@ mod tests {
         assert_eq!(guess_extension(b"unknown"), "jpg");
     }
 
+    /// Both keep paths — by URL and by **Preview** — hash the same downloaded
+    /// bytes, so the same image kept twice is one **Library** row no matter
+    /// which Preview described it.
+    #[test]
+    fn the_same_image_kept_from_two_descriptions_is_one_library_row() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = MuralisPaths {
+            config_dir: tmp.path().join("config"),
+            data_dir: tmp.path().join("data"),
+            cache_dir: tmp.path().join("cache"),
+        };
+        paths.ensure_dirs().unwrap();
+        let db = Database::open_in_memory().unwrap();
+        let manager = WallpaperManager::new(paths);
+
+        let img = image::RgbImage::new(64, 32);
+        let mut buf = Vec::new();
+        img.write_to(&mut Cursor::new(&mut buf), image::ImageFormat::Jpeg)
+            .unwrap();
+
+        // What a browsed result carries: the category page as source_url, no
+        // resolvable per-image page.
+        let browsed = WallpaperPreview {
+            source_type: SourceType::new("ultrawide"),
+            source_id: "aishot-5774.jpg".into(),
+            source_url: "https://www.ultrawidewallpapers.net/space-wallpapers".into(),
+            thumbnail_url: "https://www.ultrawidewallpapers.net/thumb.php?image=a".into(),
+            full_url: "https://www.ultrawidewallpapers.net/wallpapers/329/highres/a.jpg".into(),
+            width: 7680,
+            height: 2160,
+            tags: vec!["Space Wallpapers".into()],
+        };
+        // What `resolve_url` reconstructs from the master URL: same image,
+        // different description.
+        let resolved = WallpaperPreview {
+            source_url: "https://www.ultrawidewallpapers.net/".into(),
+            tags: vec!["ultrawidewallpapers.net".into()],
+            ..browsed.clone()
+        };
+
+        let by_preview = manager.favorite(&db, &browsed, &buf).unwrap();
+        let by_url = manager.favorite(&db, &resolved, &buf).unwrap();
+
+        assert_eq!(by_preview, by_url, "identity is the bytes, not the URL");
+        assert_eq!(db.wallpaper_count().unwrap(), 1);
+    }
+
     #[test]
     fn test_favorite_roundtrip() {
         let tmp = tempfile::tempdir().unwrap();

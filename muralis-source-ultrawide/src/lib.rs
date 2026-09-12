@@ -228,6 +228,33 @@ impl WallpaperSource for UltrawideSource {
         Ok(preview_from_master_url(url))
     }
 
+    /// A URL on this host that is not a master names a **page** — a category
+    /// page is one URL shared by every wallpaper listed on it, and the site
+    /// publishes no per-wallpaper detail page at all. Saying so is the whole
+    /// point: pasting a category page is a different mistake from pasting a
+    /// URL nothing here has ever heard of.
+    fn explain_unresolvable(&self, url: &str) -> Option<String> {
+        if preview_from_master_url(url).is_some() {
+            return None;
+        }
+        let parsed = Url::parse(url).ok()?;
+        if !is_site_host(parsed.host_str()?) {
+            return None;
+        }
+        let slug = parsed
+            .path_segments()
+            .and_then(|mut s| s.next())
+            .filter(|s| !s.is_empty())
+            .unwrap_or("<slug>")
+            .to_string();
+        Some(format!(
+            "{DISPLAY_NAME}: {url} names a page on the site, not an image — a category page \
+             is one URL shared by every wallpaper listed on it. Keep a browsed result with: \
+             muralis browse '{DISPLAY_NAME}' --category {slug} | jq -c '.results[0]' | \
+             muralis favorites keep"
+        ))
+    }
+
     /// The full-resolution master, byte-for-byte as the site serves it — this
     /// Source never crops, resizes or otherwise alters an image.
     async fn download(&self, preview: &WallpaperPreview) -> Result<bytes::Bytes> {
@@ -581,6 +608,43 @@ mod tests {
             .await
             .unwrap()
             .is_none());
+    }
+
+    #[test]
+    fn a_category_page_url_is_explained_as_a_page_rather_than_left_unrecognised() {
+        let src = source(CATEGORY_PAGE);
+
+        let why = src
+            .explain_unresolvable("https://www.ultrawidewallpapers.net/space-wallpapers")
+            .expect("this Source recognises its own category page");
+
+        assert!(why.contains("space-wallpapers"), "{why}");
+        assert!(
+            why.contains("page") && why.contains("not an image"),
+            "the user must learn what kind of URL was expected: {why}"
+        );
+        assert!(
+            why.contains("favorites keep"),
+            "and how to keep a browsed result instead: {why}"
+        );
+    }
+
+    #[test]
+    fn a_url_this_source_can_resolve_or_does_not_own_gets_no_explanation() {
+        let src = source(CATEGORY_PAGE);
+
+        assert_eq!(
+            src.explain_unresolvable(
+                "https://www.ultrawidewallpapers.net/wallpapers/329/highres/aishot-5774.jpg"
+            ),
+            None,
+            "a master resolves; there is nothing to explain"
+        );
+        assert_eq!(
+            src.explain_unresolvable("https://wallhaven.cc/w/abc123"),
+            None
+        );
+        assert_eq!(src.explain_unresolvable("not a url at all"), None);
     }
 
     #[tokio::test]

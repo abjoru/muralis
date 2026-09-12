@@ -116,6 +116,11 @@ enum FavoritesAction {
         /// Wallpaper URL (e.g. https://wallhaven.cc/w/abc123)
         url: String,
     },
+    /// Keep a result from `search` or `browse`, as the JSON object it emitted
+    Keep {
+        /// One result object; read from stdin when omitted
+        preview: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -186,6 +191,99 @@ fn search_output(
         page,
         per_page,
     }
+}
+
+/// One result as `search` / `browse` emit it, read back. Every field a
+/// **Preview** needs is required except the cosmetic ones; `is_favorited` and
+/// anything else the emitter adds later is ignored, so a consumer can hand a
+/// result straight back without stripping it.
+#[derive(serde::Deserialize)]
+struct PreviewInput {
+    source_type: String,
+    source_id: String,
+    #[serde(default)]
+    source_url: String,
+    #[serde(default)]
+    thumbnail_url: String,
+    full_url: String,
+    #[serde(default)]
+    width: u32,
+    #[serde(default)]
+    height: u32,
+    #[serde(default)]
+    tags: Vec<String>,
+}
+
+/// The **Preview** a single emitted result describes.
+///
+/// This is the keep-by-Preview path's whole input contract: a **Consumer**
+/// that already holds a result does not serialise it down to a URL for a
+/// **Source** to parse back out — a round-trip no **Browsed Source** can make,
+/// because the `source_url` it publishes names a page, not an image.
+fn preview_from_json(raw: &str) -> Result<muralis_core::models::WallpaperPreview> {
+    let raw = raw.trim();
+    if raw.is_empty() {
+        anyhow::bail!("no preview given: pass one result object, or pipe it on stdin");
+    }
+    // A whole page handed over instead of one of its results is the likeliest
+    // mistake, and its serde error ("missing field `source_type`") would not
+    // say so.
+    if let Ok(serde_json::Value::Object(map)) = serde_json::from_str::<serde_json::Value>(raw) {
+        if map.contains_key("results") && !map.contains_key("source_type") {
+            anyhow::bail!(
+                "that is a whole page, not a result: pipe one element of `results` \
+                 (e.g. jq -c '.results[0]')"
+            );
+        }
+    }
+
+    let input: PreviewInput = serde_json::from_str(raw)
+        .map_err(|e| anyhow::anyhow!("not a search or browse result: {e}"))?;
+    for (field, value) in [
+        ("source_type", &input.source_type),
+        ("source_id", &input.source_id),
+        ("full_url", &input.full_url),
+    ] {
+        if value.trim().is_empty() {
+            anyhow::bail!("preview is missing `{field}`");
+        }
+    }
+
+    Ok(muralis_core::models::WallpaperPreview {
+        source_type: muralis_core::models::SourceType::new(input.source_type),
+        source_id: input.source_id,
+        source_url: input.source_url,
+        thumbnail_url: input.thumbnail_url,
+        full_url: input.full_url,
+        width: input.width,
+        height: input.height,
+        tags: input.tags,
+    })
+}
+
+/// What keeping a **Preview** answers with, whichever path kept it — both
+/// `favorites add` and `favorites keep` render through here, so a wallpaper is
+/// indistinguishable afterwards from one kept the other way.
+fn kept(id: &str, preview: &muralis_core::models::WallpaperPreview) -> serde_json::Value {
+    serde_json::json!({
+        "id": id,
+        "source_type": preview.source_type.to_string(),
+        "source_id": preview.source_id,
+        "source_url": preview.source_url,
+    })
+}
+
+/// What to tell a user whose pasted URL resolved to nothing.
+///
+/// A **Source** that recognises the URL as its own but cannot make an image of
+/// it explains itself; only a URL no Source claims at all keeps the bare
+/// "nothing resolved" message. The two are different mistakes and deserve
+/// different words.
+fn unresolvable_error(registry: &SourceRegistry, url: &str) -> String {
+    registry
+        .iter()
+        .find_map(|s| s.explain_unresolvable(url))
+        .unwrap_or_else(|| format!("no source could resolve URL: {url}"))
 }
 
 fn source_info(s: &dyn WallpaperSource) -> SourceInfo {
@@ -428,19 +526,46 @@ async fn main() -> Result<()> {
 
                 match resolved {
                     Some((id, preview)) => {
-                        let out = serde_json::json!({
-                            "id": id,
-                            "source_type": preview.source_type.to_string(),
-                            "source_id": preview.source_id,
-                            "source_url": preview.source_url,
-                        });
-                        println!("{}", serde_json::to_string(&out)?);
+                        println!("{}", serde_json::to_string(&kept(&id, &preview))?)
                     }
                     None => {
-                        eprintln!("error: no source could resolve URL: {url}");
+                        eprintln!("error: {}", unresolvable_error(&registry, &url));
                         std::process::exit(1);
                     }
                 }
+            }
+            FavoritesAction::Keep { preview } => {
+                let raw = match preview {
+                    Some(raw) => raw,
+                    None => {
+                        use std::io::Read;
+                        let mut buf = String::new();
+                        std::io::stdin().read_to_string(&mut buf)?;
+                        buf
+                    }
+                };
+                let preview = preview_from_json(&raw)?;
+
+                let paths = MuralisPaths::new()?;
+                let config = Config::load(&paths)?;
+                let (registry, _) = build_registry(&config)?;
+                let db = Database::open(&paths.db_path())?;
+                let manager = WallpaperManager::new(paths);
+
+                // The Preview names its Source outright, so nothing has to
+                // recognise a URL: `download` already takes a whole Preview.
+                let src = registry
+                    .by_source_type(preview.source_type.as_str())
+                    .ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "no configured source of type '{}' — enable it in config.toml",
+                            preview.source_type
+                        )
+                    })?;
+                let data = src.download(&preview).await?;
+                let id = manager.favorite(&db, &preview, &data)?;
+
+                println!("{}", serde_json::to_string(&kept(&id, &preview))?);
             }
         },
         Commands::Sources { action } => match action {
@@ -754,6 +879,121 @@ mod tests {
         let feed = browse_target(&registry, "daily feed").unwrap();
 
         assert_eq!(select_category(feed, None).unwrap(), None);
+    }
+
+    #[test]
+    fn a_result_as_search_and_browse_emit_it_is_keepable_as_a_preview() {
+        let emitted =
+            serde_json::to_value(search_output(vec![preview("a")], 1, 24, |_, _| false)).unwrap();
+        let one = serde_json::to_string(&emitted["results"][0]).unwrap();
+
+        let parsed = preview_from_json(&one).expect("a result round-trips into the Preview it was");
+
+        assert_eq!(parsed.source_type.as_str(), "feed");
+        assert_eq!(parsed.source_id, "a");
+        assert_eq!(parsed.full_url, "https://example.com/a.jpg");
+        assert_eq!(parsed.thumbnail_url, "https://example.com/a-thumb.jpg");
+        assert_eq!((parsed.width, parsed.height), (3840, 1080));
+        assert_eq!(parsed.tags, vec!["wide".to_string()]);
+    }
+
+    #[test]
+    fn an_incomplete_preview_is_refused_with_the_field_it_is_missing() {
+        for missing in ["source_type", "source_id", "full_url"] {
+            let mut obj = serde_json::json!({
+                "source_type": "feed",
+                "source_id": "a",
+                "full_url": "https://example.com/a.jpg",
+            });
+            obj.as_object_mut().unwrap().remove(missing);
+            let err = preview_from_json(&obj.to_string())
+                .map(|_| ())
+                .expect_err("{missing} is not optional");
+
+            assert!(err.to_string().contains(missing), "{err}");
+
+            // Present but empty is just as unkeepable, and says the same.
+            obj[missing] = serde_json::json!("");
+            let err = preview_from_json(&obj.to_string())
+                .map(|_| ())
+                .expect_err("an empty {missing} identifies nothing");
+            assert!(err.to_string().contains(missing), "{err}");
+        }
+    }
+
+    #[test]
+    fn malformed_input_is_refused_rather_than_panicking() {
+        assert!(preview_from_json("").map(|_| ()).is_err());
+        assert!(preview_from_json("{not json").map(|_| ()).is_err());
+        assert!(preview_from_json("[]").map(|_| ()).is_err());
+    }
+
+    #[test]
+    fn handing_the_whole_page_over_instead_of_one_result_says_so() {
+        let page =
+            serde_json::to_string(&search_output(vec![preview("a")], 1, 24, |_, _| false)).unwrap();
+
+        let err = preview_from_json(&page)
+            .map(|_| ())
+            .expect_err("a page is not a result");
+
+        assert!(err.to_string().contains("results"), "{err}");
+    }
+
+    #[test]
+    fn a_wallpaper_kept_by_preview_answers_exactly_as_one_kept_by_url() {
+        let by_url = kept("abc", &preview("a"));
+        let by_preview = kept("abc", &preview("a"));
+
+        assert_eq!(by_url, by_preview);
+        assert_eq!(by_url["id"], "abc");
+        assert_eq!(by_url["source_type"], "feed");
+        assert_eq!(by_url["source_id"], "a");
+        assert_eq!(by_url["source_url"], "https://example.com/a");
+    }
+
+    struct Explaining;
+
+    #[async_trait]
+    impl WallpaperSource for Explaining {
+        fn name(&self) -> &str {
+            "explaining"
+        }
+        fn source_type(&self) -> &str {
+            "explaining"
+        }
+        fn explain_unresolvable(&self, url: &str) -> Option<String> {
+            url.contains("explaining.test")
+                .then(|| format!("{url} names a category page, not an image"))
+        }
+        async fn search(
+            &self,
+            _q: &str,
+            _p: u32,
+            _pp: u32,
+            _a: AspectRatioFilter,
+        ) -> CoreResult<Vec<WallpaperPreview>> {
+            Ok(Vec::new())
+        }
+        async fn download(&self, _p: &WallpaperPreview) -> CoreResult<bytes::Bytes> {
+            Ok(bytes::Bytes::new())
+        }
+    }
+
+    #[test]
+    fn a_url_naming_a_page_is_a_different_error_from_one_nobody_recognises() {
+        let mut registry = registry();
+        registry.register(Box::new(Explaining));
+
+        let page = unresolvable_error(&registry, "https://explaining.test/space-wallpapers");
+        let unknown = unresolvable_error(&registry, "https://nobody.test/whatever");
+
+        assert!(page.contains("not an image"), "{page}");
+        assert!(
+            unknown.contains("no source could resolve URL"),
+            "an unrecognised URL keeps the message it always had: {unknown}"
+        );
+        assert!(!unknown.contains("not an image"), "{unknown}");
     }
 
     fn wallpaper(id: &str) -> Wallpaper {

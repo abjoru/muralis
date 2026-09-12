@@ -225,6 +225,16 @@ pub trait WallpaperSource: Send + Sync {
     async fn resolve_url(&self, _url: &str) -> Result<Option<WallpaperPreview>> {
         Ok(None)
     }
+
+    /// Why this Source declines `url` — asked only after `resolve_url` has
+    /// yielded nothing, and answered only when the Source recognises the URL
+    /// as its own but it names something other than an image (a **Category**
+    /// page, a listing, a post). It exists so a caller pasting the wrong kind
+    /// of URL learns *what kind* was expected, instead of being told only that
+    /// nothing resolved. Default: nothing to say.
+    fn explain_unresolvable(&self, _url: &str) -> Option<String> {
+        None
+    }
 }
 
 /// Resolve the category a browse request names against what the Source
@@ -303,6 +313,19 @@ impl SourceRegistry {
 
     pub fn iter(&self) -> impl Iterator<Item = &dyn WallpaperSource> {
         self.sources.iter().map(|s| s.as_ref())
+    }
+
+    /// The **Source** that can download a **Preview**, found by the
+    /// `source_type` the Preview carries rather than by display name — a
+    /// Preview records its type, never the name a UI renders.
+    ///
+    /// Several Sources can share one `source_type`: every **Feed Source**
+    /// instance is `feed`. That is not an ambiguity here, because downloading
+    /// a Preview needs only the type's transport and every instance of a type
+    /// fetches `full_url` the same way. Per-host identity that *would* be
+    /// ambiguous — the **Booru Source**'s — already lives in `source_type`.
+    pub fn by_source_type(&self, source_type: &str) -> Option<&dyn WallpaperSource> {
+        self.iter().find(|s| s.source_type() == source_type)
     }
 
     /// Only the **Searched** Sources — the set an unscoped `search` fans out
@@ -404,6 +427,56 @@ mod tests {
         assert_eq!(
             registry.searched().map(|s| s.name()).collect::<Vec<_>>(),
             vec!["undeclared"]
+        );
+    }
+
+    /// A **Source** whose display name is nothing like its `source_type` —
+    /// the **Feed Source**'s shape, and what a Preview-keyed lookup must cope
+    /// with.
+    struct Renamed;
+
+    #[async_trait]
+    impl WallpaperSource for Renamed {
+        fn name(&self) -> &str {
+            "Daily Feed"
+        }
+        fn source_type(&self) -> &str {
+            "feed"
+        }
+        async fn search(
+            &self,
+            _query: &str,
+            _page: u32,
+            _per_page: u32,
+            _aspect: AspectRatioFilter,
+        ) -> Result<Vec<WallpaperPreview>> {
+            Ok(Vec::new())
+        }
+        async fn download(&self, _preview: &WallpaperPreview) -> Result<bytes::Bytes> {
+            Ok(bytes::Bytes::new())
+        }
+    }
+
+    #[test]
+    fn a_preview_finds_its_source_by_source_type_not_by_display_name() {
+        let mut registry = SourceRegistry::new();
+        registry.register(Box::new(Undeclared));
+        registry.register(Box::new(Renamed));
+
+        assert_eq!(
+            registry.by_source_type("feed").map(|s| s.name()),
+            Some("Daily Feed"),
+            "a Preview carries its type, never the name a UI renders"
+        );
+        assert!(registry.by_source_type("Daily Feed").is_none());
+        assert!(registry.by_source_type("nothing-configured").is_none());
+    }
+
+    #[test]
+    fn a_source_that_declares_nothing_explains_no_url() {
+        assert_eq!(
+            Undeclared.explain_unresolvable("https://example.com/a"),
+            None
         );
     }
 
