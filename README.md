@@ -307,6 +307,10 @@ muralis browse Ultrawide --category Dark
 # Tags carry spaces and punctuation, so quote them on a shell.
 muralis browse Ultrawide --category 'Pixel Art'
 
+# The site's tags combine: repeat --category to narrow to their intersection.
+# Order and repeats do not matter — the same set is the same request.
+muralis browse Ultrawide --category Dark --category Space
+
 # Keeping a browsed result: hand the result over, don't paste its source_url —
 # that names the gallery, which every wallpaper listed on it shares.
 muralis browse Ultrawide --category Space \

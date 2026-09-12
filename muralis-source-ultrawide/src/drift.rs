@@ -319,7 +319,7 @@ pub async fn check_live_gallery_with(
     tag: &str,
     limits: &DriftLimits,
 ) -> DriftCheck {
-    let url = gallery_request(tag, 0, limits.window);
+    let url = gallery_request(&[tag], 0, limits.window);
     let tag = tag.to_string();
 
     let body = match fetch(http, &tag, &url, &[]).await {
@@ -328,7 +328,7 @@ pub async fn check_live_gallery_with(
     };
 
     let html = String::from_utf8_lossy(&body);
-    let previews = match parse_gallery(&html, &tag, &url) {
+    let previews = match parse_gallery(&html, std::slice::from_ref(&tag), &url) {
         Ok(previews) if !previews.is_empty() => previews,
         refused => {
             // Which question tripped is decided by whether the fragment had
@@ -679,7 +679,7 @@ mod tests {
     }
 
     fn window_url() -> String {
-        gallery_request("Dark", 0, DriftLimits::default().window)
+        gallery_request(&["Dark"], 0, DriftLimits::default().window)
     }
 
     /// A transport that never completes — DNS, TLS or timeout, from the
@@ -1007,7 +1007,7 @@ mod tests {
             check,
             DriftCheck::RateLimited {
                 tag: "Space".to_string(),
-                url: gallery_request("Space", 0, 24),
+                url: gallery_request(&["Space"], 0, 24),
                 status: 429,
             }
         );
@@ -1024,7 +1024,7 @@ mod tests {
             check,
             DriftCheck::Rejected {
                 tag: "Space".to_string(),
-                url: gallery_request("Space", 0, 24),
+                url: gallery_request(&["Space"], 0, 24),
                 status: 503,
             }
         );

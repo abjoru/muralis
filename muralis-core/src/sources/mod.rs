@@ -200,12 +200,37 @@ pub trait WallpaperSource: Send + Sync {
         Vec::new()
     }
 
-    /// Retrieve from a **Browsed** Source: no query, optionally a category
-    /// slug, paged and aspect-filtered exactly as `search` is. Defaults to
-    /// refusing, because a **Searched** Source has nothing to browse.
+    /// Whether this Source's **Categories** combine — whether naming several
+    /// asks for their intersection, or whether they are mutually exclusive
+    /// slices of which exactly one can be selected. Declared, never assumed:
+    /// a Source that cannot intersect must be able to refuse a second
+    /// category rather than silently honour the first. Defaults to `false`,
+    /// so a Source that declares nothing keeps the single-category contract.
+    fn categories_combine(&self) -> bool {
+        false
+    }
+
+    /// Whether naming *no* category is itself a selection this Source can
+    /// answer. Defaults to `false`: a Source publishing categories requires
+    /// one, because browsing "everything" is not a slice it offers. A Source
+    /// with an untagged feed behind its categories declares otherwise.
+    /// Irrelevant to a Source publishing no categories at all — there the
+    /// empty selection is the only one.
+    fn empty_selection_is_meaningful(&self) -> bool {
+        false
+    }
+
+    /// Retrieve from a **Browsed** Source: no query, a *set* of category
+    /// slugs, paged and aspect-filtered exactly as `search` is. Several slugs
+    /// ask for their intersection, and only a Source declaring
+    /// [`categories_combine`](Self::categories_combine) is ever handed more
+    /// than one. The set arrives resolved by [`select_categories`] — every
+    /// slug published, deduplicated, in a canonical order — so a Source never
+    /// validates it again. Defaults to refusing, because a **Searched**
+    /// Source has nothing to browse.
     async fn browse(
         &self,
-        _category: Option<&str>,
+        _categories: &[String],
         _page: u32,
         _per_page: u32,
         _aspect: AspectRatioFilter,
@@ -237,18 +262,26 @@ pub trait WallpaperSource: Send + Sync {
     }
 }
 
-/// Resolve the category a browse request names against what the Source
+/// Resolve the categories a browse request names against what the Source
 /// actually publishes, before any network call.
 ///
-/// A Source publishing zero categories (the **Feed Source**) takes `None`:
-/// selecting the feed *is* the selection. A Source publishing categories
-/// requires one to be named — browsing "everything" is not a slice it offers.
-/// Either way a slug it does not publish is refused with the ones it does, so
-/// a caller can correct itself without reading the config.
-pub fn select_category(
+/// The answer is a **set**: deduplicated, and in the Source's own published
+/// order rather than the caller's typing order, so the same selection asked
+/// for either way round produces one upstream request and one cache key.
+///
+/// Refused, always before the network and never as an empty result:
+/// - a slug the Source does not publish — answered with the ones it does, so
+///   a typo reads as a typo rather than as "nothing found";
+/// - more than one slug at a Source whose categories do not combine, named
+///   as that Source's limit rather than silently honouring the first;
+/// - no slug at all at a Source that publishes categories, unless it declares
+///   the empty selection meaningful. A Source publishing none (the **Feed
+///   Source**) takes the empty selection and nothing else: selecting the feed
+///   *is* the selection.
+pub fn select_categories(
     source: &dyn WallpaperSource,
-    requested: Option<&str>,
-) -> Result<Option<String>> {
+    requested: &[String],
+) -> Result<Vec<String>> {
     let published = source.categories();
     let refuse = |kind: String| {
         Err(crate::error::MuralisError::Source {
@@ -265,24 +298,54 @@ pub fn select_category(
             .join(", ")
     };
 
-    match requested {
-        None if published.is_empty() => Ok(None),
-        None => refuse(format!(
+    if requested.is_empty() {
+        if published.is_empty() || source.empty_selection_is_meaningful() {
+            return Ok(Vec::new());
+        }
+        return refuse(format!(
             "'{}' publishes categories; name one with --category. available: {}",
             source.name(),
             available()
-        )),
-        Some(slug) if published.is_empty() => refuse(format!(
-            "'{}' publishes no categories; browse it without --category (got '{slug}')",
-            source.name()
-        )),
-        Some(slug) if published.iter().any(|c| c.slug == slug) => Ok(Some(slug.to_string())),
-        Some(slug) => refuse(format!(
-            "'{}' does not publish category '{slug}'. available: {}",
-            source.name(),
-            available()
-        )),
+        ));
     }
+    if published.is_empty() {
+        return refuse(format!(
+            "'{}' publishes no categories; browse it without --category (got '{}')",
+            source.name(),
+            requested.join(", ")
+        ));
+    }
+
+    // Every named slug, not just the first: a typo beside a real tag is still
+    // a typo, and the endpoint would answer it with an empty window.
+    for slug in requested {
+        if !published.iter().any(|c| &c.slug == slug) {
+            return refuse(format!(
+                "'{}' does not publish category '{slug}'. available: {}",
+                source.name(),
+                available()
+            ));
+        }
+    }
+
+    // Canonical order is the published one, so the set — not the typing — is
+    // what the request is built from. Dedup happens here, before
+    // combinability is asked about: naming one category twice is naming it
+    // once, at every Source.
+    let selected: Vec<String> = published
+        .iter()
+        .filter(|c| requested.iter().any(|r| r == &c.slug))
+        .map(|c| c.slug.clone())
+        .collect();
+
+    if selected.len() > 1 && !source.categories_combine() {
+        return refuse(format!(
+            "'{}' takes one category at a time; its categories do not combine (got: {})",
+            source.name(),
+            selected.join(", ")
+        ));
+    }
+    Ok(selected)
 }
 
 pub struct SourceRegistry {
@@ -374,9 +437,13 @@ mod tests {
         }
     }
 
-    /// A **Browsed** Source with a configurable category list.
+    /// A **Browsed** Source with a configurable category list and the
+    /// declarations a selection is resolved against.
+    #[derive(Default)]
     struct Browsable {
         categories: Vec<SourceCategory>,
+        combines: bool,
+        empty_ok: bool,
     }
 
     #[async_trait]
@@ -392,6 +459,12 @@ mod tests {
         }
         fn categories(&self) -> Vec<SourceCategory> {
             self.categories.clone()
+        }
+        fn categories_combine(&self) -> bool {
+            self.combines
+        }
+        fn empty_selection_is_meaningful(&self) -> bool {
+            self.empty_ok
         }
         async fn search(
             &self,
@@ -419,9 +492,7 @@ mod tests {
     fn the_registry_yields_only_searched_sources_so_the_call_site_cannot_forget() {
         let mut registry = SourceRegistry::new();
         registry.register(Box::new(Undeclared));
-        registry.register(Box::new(Browsable {
-            categories: Vec::new(),
-        }));
+        registry.register(Box::new(Browsable::default()));
 
         assert_eq!(registry.names(), vec!["undeclared", "browsable"]);
         assert_eq!(
@@ -486,12 +557,24 @@ mod tests {
                 SourceCategory::new("space", "Space"),
                 SourceCategory::new("nature", "Nature"),
             ],
+            ..Browsable::default()
         }
+    }
+
+    fn combining() -> Browsable {
+        Browsable {
+            combines: true,
+            ..with_categories()
+        }
+    }
+
+    fn named(slugs: &[&str]) -> Vec<String> {
+        slugs.iter().map(|s| (*s).to_string()).collect()
     }
 
     #[test]
     fn an_unpublished_category_is_refused_with_the_ones_that_are_published() {
-        let err = select_category(&with_categories(), Some("volcanoes"))
+        let err = select_categories(&with_categories(), &named(&["volcanoes"]))
             .expect_err("a category the source does not publish is not retrievable");
         let msg = err.to_string();
 
@@ -500,33 +583,119 @@ mod tests {
         assert!(msg.contains("nature"), "{msg}");
     }
 
+    /// Validation is of *every* named category, not just the first — a typo
+    /// alongside a real tag is still a typo, and it is caught before the
+    /// request rather than read as an empty result afterwards.
+    #[test]
+    fn a_typo_among_valid_categories_is_refused_rather_than_browsed_around() {
+        let err = select_categories(&combining(), &named(&["space", "volcanos"]))
+            .expect_err("one unpublished name spoils the selection");
+
+        assert!(err.to_string().contains("volcanos"), "{err}");
+    }
+
     #[test]
     fn a_published_category_selects_by_slug() {
         assert_eq!(
-            select_category(&with_categories(), Some("space")).unwrap(),
-            Some("space".to_string())
+            select_categories(&with_categories(), &named(&["space"])).unwrap(),
+            named(&["space"])
+        );
+    }
+
+    /// Order does not matter: the same *set* canonicalises to one selection,
+    /// so the upstream request a cache or a comparison sees is the same
+    /// string whichever way it was typed.
+    #[test]
+    fn the_same_set_of_categories_in_either_order_is_one_selection() {
+        let one = select_categories(&combining(), &named(&["space", "nature"])).unwrap();
+        let other = select_categories(&combining(), &named(&["nature", "space"])).unwrap();
+
+        assert_eq!(one, other);
+        assert_eq!(
+            one,
+            named(&["space", "nature"]),
+            "canonical: published order"
+        );
+    }
+
+    #[test]
+    fn naming_the_same_category_twice_is_naming_it_once() {
+        assert_eq!(
+            select_categories(&combining(), &named(&["space", "space"])).unwrap(),
+            named(&["space"])
+        );
+        assert_eq!(
+            select_categories(&with_categories(), &named(&["space", "space"])).unwrap(),
+            named(&["space"]),
+            "duplicates collapse before combinability is asked about"
+        );
+    }
+
+    /// Combination is a property the Source declares. One that does not
+    /// combine refuses the second category by name rather than honouring the
+    /// first and dropping the rest.
+    #[test]
+    fn several_categories_at_a_source_that_does_not_combine_them_are_refused() {
+        let err = select_categories(&with_categories(), &named(&["space", "nature"]))
+            .expect_err("its categories are mutually exclusive slices");
+        let msg = err.to_string();
+
+        assert!(
+            msg.contains("browsable"),
+            "the refusal names the Source: {msg}"
+        );
+        assert!(msg.contains("one"), "{msg}");
+    }
+
+    #[test]
+    fn a_combining_source_takes_the_whole_selection() {
+        assert_eq!(
+            select_categories(&combining(), &named(&["nature", "space"])).unwrap(),
+            named(&["space", "nature"])
         );
     }
 
     #[test]
     fn zero_categories_means_selecting_the_source_is_the_selection() {
-        let feed_shaped = Browsable {
-            categories: Vec::new(),
-        };
+        let feed_shaped = Browsable::default();
 
-        assert_eq!(select_category(&feed_shaped, None).unwrap(), None);
+        assert_eq!(
+            select_categories(&feed_shaped, &[]).unwrap(),
+            Vec::<String>::new()
+        );
 
-        let err =
-            select_category(&feed_shaped, Some("anything")).expect_err("there is no slice to name");
+        let err = select_categories(&feed_shaped, &named(&["anything"]))
+            .expect_err("there is no slice to name");
         assert!(err.to_string().contains("publishes no categories"));
     }
 
     #[test]
     fn a_categorised_source_requires_a_category_to_retrieve_anything() {
-        let err = select_category(&with_categories(), None)
+        let err = select_categories(&with_categories(), &[])
             .expect_err("browsing everything is not a slice it offers");
         let msg = err.to_string();
 
         assert!(msg.contains("space") && msg.contains("nature"), "{msg}");
+    }
+
+    /// Unless it says otherwise: a Source for which the empty selection is
+    /// itself a slice gets to answer one, and that is a declaration too.
+    #[test]
+    fn an_empty_selection_is_honoured_where_the_source_declares_it_meaningful() {
+        let untagged = Browsable {
+            empty_ok: true,
+            ..with_categories()
+        };
+
+        assert_eq!(
+            select_categories(&untagged, &[]).unwrap(),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn a_source_that_declares_nothing_neither_combines_nor_browses_empty() {
+        assert!(!Undeclared.categories_combine());
+        assert!(!Undeclared.empty_selection_is_meaningful());
     }
 }

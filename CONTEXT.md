@@ -36,14 +36,20 @@ A **Source** with no query dimension. Excluded from unscoped `search` and reacha
 _Avoid_: feed source (feeds are the first Browsed Source, not the only possible one), gallery source
 
 **Category**:
-A named, selectable slice of a **Browsed Source**'s catalog: a stable `slug` the caller passes and a human-readable `label` a UI renders. A Browsed Source publishing categories requires one to be named to retrieve anything — browsing "everything" is not a slice it offers — and a slug it does not publish is refused with the list of ones it does.
+A named, selectable slice of a **Browsed Source**'s catalog: a stable `slug` the caller passes and a human-readable `label` a UI renders. A Browsed Source publishing categories requires at least one to be named to retrieve anything — browsing "everything" is not a slice it offers, unless the Source declares the empty selection meaningful — and a slug it does not publish is refused with the list of ones it does, before any request is made.
+
+**Category selection**:
+What a browse request names: a *set* of **Categories**, not a single value. Several ask for their **intersection**. Resolved once, by `select_categories`, before the transport is touched — every named slug validated against the published list, duplicates collapsed, and the set put into the Source's own published order, so the same selection typed either way round is one upstream request and one cache key. A Source is never handed a selection it has not published, and never validates one again.
+
+**Combinable categories**:
+A declared property of a **Source** (`categories_combine`, default `false`), reported by `sources list` so a consumer can build a single- or multi-select control without knowing which Source it is rendering. Declared rather than assumed: a Source whose categories are mutually exclusive slices *refuses* a second one, naming itself, instead of silently honouring the first. The **Ultrawide Source** declares it — the **Gallery endpoint** intersects a comma-separated tag list, measurably (one tag 293 results, two 54), and that combination is why the endpoint replaced the **Category page**. An unknown tag is invisible upstream — the endpoint answers it with the same empty fragment as a real tag with no matches — which is why validation happens here and not after the network.
 _Avoid_: tag (that is a **Preview**'s metadata), collection, section
 
 **Zero categories**:
 The **Feed Source**'s correct declaration, and a meaningful answer rather than an unfilled one: a feed is a single undifferentiated stream, so *selecting the feed is the selection*. Browsing it takes no category, and naming one is refused. A Browsed Source is therefore not obliged to have categories — publishing none is a statement about its shape, not a gap.
 
 **browse (verb)**:
-The **CLI contract**'s entry point to a **Browsed Source**: `muralis browse <source> [--category <slug>] [--page] [--per-page] [--aspect]`. It pages and aspect-filters exactly as `search` does and emits the *same JSON result shape*, `is_favorited` included, so every existing consumer of a search result works unchanged against a browse result. One function renders both.
+The **CLI contract**'s entry point to a **Browsed Source**: `muralis browse <source> [--category <slug>]... [--page] [--per-page] [--aspect]`. `--category` repeats, one category per occurrence — so a value carrying spaces or punctuation needs no delimiter convention and no escaping beyond ordinary shell quoting — and several ask for their intersection at a Source whose **Combinable categories** say they may. It pages and aspect-filters exactly as `search` does and emits the *same JSON result shape*, `is_favorited` included, so every existing consumer of a search result works unchanged against a browse result. One function renders both.
 
 **Feed Source**:
 The non-REST **Source** backed by RSS/Atom; not a **RestSource** (no paged JSON API, fetches image dimensions itself). The first **Browsed Source**, declaring **Zero categories**. It has no paging dimension either: every entry the feed currently carries, aspect-filtered, is one page, so `page`/`per_page` do not slice it.
@@ -353,7 +359,7 @@ _Avoid_: API, treating it as the Consumer seam (that is the **IPC contract**)
 - A **RestSource** produces zero or more **Previews** per logical page via **Page-filling** over a **Block** of upstream pages.
 - The **Feed Source** is a **Source** but never a **RestSource**.
 - Every **Source** declares a **Retrieval mode**; `SourceRegistry::searched()` yields only the **Searched** ones, so the unscoped-search call site cannot forget to filter and let a **Browsed Source** leak into a query's answer.
-- A **Browsed Source** publishes zero or more **Categories**; a **Searched Source** publishes none.
+- A **Browsed Source** publishes zero or more **Categories**; a **Searched Source** publishes none. A **Category selection** is a *set*, and whether its members combine is declared per Source, never assumed.
 - The GUI partitions its filter bar on the declared **Retrieval mode**: **Searched Sources** are chips beside "All", **Browsed Sources** live in a selector, and a Browsed Source's **Categories** are a bar of their own below it. Nothing in the GUI branches on a **Source**'s type name.
 - `browse` and `search` render **Previews** through one function, so their output shapes cannot drift apart.
 - The `SourceRegistry` holds **Sources** (any mix of **RestSource**, **Booru Source**, **Pixabay Source**, **Feed Source**).

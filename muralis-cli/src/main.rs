@@ -8,7 +8,7 @@ use muralis_core::ipc::{self, FavoritesPage, IpcRequest, IpcResponse};
 use muralis_core::models::{DisplayMode, Wallpaper};
 use muralis_core::paths::MuralisPaths;
 use muralis_core::sources::{
-    select_category, AspectRatioFilter, RetrievalMode, SourceCategory, SourceContext,
+    select_categories, AspectRatioFilter, RetrievalMode, SourceCategory, SourceContext,
     SourceRegistry, WallpaperSource,
 };
 use muralis_core::wallpapers::WallpaperManager;
@@ -65,9 +65,10 @@ enum Commands {
     Browse {
         /// Source name, as reported by `muralis sources list`
         source: String,
-        /// Category slug; omit for a source that publishes none
-        #[arg(long)]
-        category: Option<String>,
+        /// Category slug; repeat to narrow by several at a source whose
+        /// categories combine, omit for a source that publishes none
+        #[arg(long = "category")]
+        categories: Vec<String>,
         /// Page number
         #[arg(long, default_value = "1")]
         page: u32,
@@ -152,15 +153,18 @@ struct SearchResult {
     is_favorited: bool,
 }
 
-/// One row of `sources list`. `retrieval_mode` and `categories` are additive:
-/// existing fields keep their names and meanings, so a consumer that only
-/// reads `name`/`source_type` is unaffected.
+/// One row of `sources list`. `retrieval_mode`, `categories` and
+/// `categories_combine` are additive: existing fields keep their names and
+/// meanings, so a consumer that only reads `name`/`source_type` is unaffected.
+/// `categories_combine` is what lets a consumer build a single- or
+/// multi-select control without knowing which Source it is rendering.
 #[derive(Serialize)]
 struct SourceInfo {
     name: String,
     source_type: String,
     retrieval_mode: RetrievalMode,
     categories: Vec<SourceCategory>,
+    categories_combine: bool,
 }
 
 /// Render **Previews** into the `search` JSON shape. `browse` emits the same
@@ -294,6 +298,7 @@ fn source_info(s: &dyn WallpaperSource) -> SourceInfo {
         source_type: s.source_type().to_string(),
         retrieval_mode: s.retrieval_mode(),
         categories: s.categories(),
+        categories_combine: s.categories_combine(),
     }
 }
 
@@ -465,7 +470,7 @@ async fn main() -> Result<()> {
         }
         Commands::Browse {
             source,
-            category,
+            categories,
             page,
             per_page,
             aspect,
@@ -478,10 +483,11 @@ async fn main() -> Result<()> {
                 aspect.parse().map_err(|e: String| anyhow::anyhow!(e))?;
 
             let src = browse_target(&registry, &source)?;
-            let category = select_category(src, category.as_deref())?;
-            let previews = src
-                .browse(category.as_deref(), page, per_page, aspect)
-                .await?;
+            // Resolved before the transport is touched: an unpublished slug,
+            // or a second one at a Source whose categories do not combine, is
+            // a refusal rather than an empty upstream window.
+            let categories = select_categories(src, &categories)?;
+            let previews = src.browse(&categories, page, per_page, aspect).await?;
 
             let output = search_output(previews, page, per_page, |ty, id| {
                 db.is_favorited_by_source(ty, id).unwrap_or(false)
@@ -722,6 +728,7 @@ mod tests {
         name: &'static str,
         mode: RetrievalMode,
         categories: Vec<SourceCategory>,
+        combines: bool,
     }
 
     impl Stub {
@@ -730,9 +737,17 @@ mod tests {
                 name,
                 mode: RetrievalMode::Searched,
                 categories: Vec::new(),
+                combines: false,
             })
         }
         fn browsed(name: &'static str, slugs: &[&str]) -> Box<dyn WallpaperSource> {
+            Self::combining(name, slugs, false)
+        }
+        fn combining(
+            name: &'static str,
+            slugs: &[&str],
+            combines: bool,
+        ) -> Box<dyn WallpaperSource> {
             Box::new(Stub {
                 name,
                 mode: RetrievalMode::Browsed,
@@ -740,6 +755,7 @@ mod tests {
                     .iter()
                     .map(|s| SourceCategory::new(*s, s.to_uppercase()))
                     .collect(),
+                combines,
             })
         }
     }
@@ -757,6 +773,9 @@ mod tests {
         }
         fn categories(&self) -> Vec<SourceCategory> {
             self.categories.clone()
+        }
+        fn categories_combine(&self) -> bool {
+            self.combines
         }
         async fn search(
             &self,
@@ -781,6 +800,7 @@ mod tests {
         r.register(Stub::searched("wallhaven"));
         r.register(Stub::browsed("daily feed", &[]));
         r.register(Stub::browsed("ultrawide", &["space", "nature"]));
+        r.register(Stub::combining("tagged", &["dark", "space"], true));
         r
     }
 
@@ -888,6 +908,26 @@ mod tests {
         );
     }
 
+    /// Whether a Source's categories combine is reported alongside them, so a
+    /// consumer can build a single- or multi-select control without knowing
+    /// which Source it is looking at.
+    #[test]
+    fn sources_list_reports_whether_each_sources_categories_combine() {
+        let registry = registry();
+        let json = serde_json::to_value(
+            registry
+                .iter()
+                .map(source_info)
+                .collect::<Vec<SourceInfo>>(),
+        )
+        .unwrap();
+
+        assert_eq!(json[0]["categories_combine"], false, "a searched source");
+        assert_eq!(json[1]["categories_combine"], false, "a feed");
+        assert_eq!(json[2]["categories_combine"], false);
+        assert_eq!(json[3]["categories_combine"], true);
+    }
+
     fn preview(id: &str) -> WallpaperPreview {
         WallpaperPreview {
             source_type: SourceType::new("feed"),
@@ -928,7 +968,67 @@ mod tests {
         let registry = registry();
         let feed = browse_target(&registry, "daily feed").unwrap();
 
-        assert_eq!(select_category(feed, None).unwrap(), None);
+        assert!(select_categories(feed, &[]).unwrap().is_empty());
+        assert!(
+            select_categories(feed, &["anything".to_string()]).is_err(),
+            "naming a category for a feed is still refused"
+        );
+    }
+
+    /// `--category` is repeatable, one category per occurrence: values with
+    /// spaces and punctuation need no delimiter convention and no escaping
+    /// beyond ordinary shell quoting.
+    #[test]
+    fn the_category_option_repeats_one_value_per_occurrence() {
+        let cli = Cli::try_parse_from([
+            "muralis",
+            "browse",
+            "Ultrawide",
+            "--category",
+            "Pixel Art",
+            "--category",
+            "Crops great @ 16:9",
+        ])
+        .expect("a repeated option is one value each");
+
+        let Commands::Browse { categories, .. } = cli.command else {
+            panic!("parsed the wrong command");
+        };
+        assert_eq!(categories, vec!["Pixel Art", "Crops great @ 16:9"]);
+    }
+
+    #[test]
+    fn browsing_without_a_category_names_none() {
+        let cli = Cli::try_parse_from(["muralis", "browse", "daily feed"]).unwrap();
+
+        let Commands::Browse { categories, .. } = cli.command else {
+            panic!("parsed the wrong command");
+        };
+        assert!(categories.is_empty());
+    }
+
+    /// The refusal a multi-select consumer needs: it names the Source rather
+    /// than quietly honouring the first category and dropping the rest.
+    #[test]
+    fn several_categories_at_a_source_that_does_not_combine_them_names_the_source() {
+        let registry = registry();
+        let src = browse_target(&registry, "ultrawide").unwrap();
+
+        let err = select_categories(src, &["space".to_string(), "nature".to_string()])
+            .expect_err("its categories are one-at-a-time");
+
+        assert!(err.to_string().contains("ultrawide"), "{err}");
+    }
+
+    #[test]
+    fn a_combining_source_takes_the_whole_selection_in_published_order() {
+        let registry = registry();
+        let src = browse_target(&registry, "tagged").unwrap();
+
+        assert_eq!(
+            select_categories(src, &["space".to_string(), "dark".to_string()]).unwrap(),
+            vec!["dark".to_string(), "space".to_string()]
+        );
     }
 
     #[test]

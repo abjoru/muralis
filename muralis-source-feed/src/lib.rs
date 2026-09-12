@@ -100,12 +100,12 @@ impl WallpaperSource for FeedSource {
     }
 
     /// A feed publishes no categories, and it is a fixed set with no
-    /// pagination upstream — so `category` is always `None` and `page` /
+    /// pagination upstream — so the selection is always empty and `page` /
     /// `per_page` do not slice it. Every entry the feed currently carries,
     /// aspect-filtered, is one page.
     async fn browse(
         &self,
-        _category: Option<&str>,
+        _categories: &[String],
         _page: u32,
         _per_page: u32,
         aspect: AspectRatioFilter,
@@ -336,7 +336,7 @@ fn is_image_url(url: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use muralis_core::sources::select_category;
+    use muralis_core::sources::select_categories;
 
     #[test]
     fn test_extract_img_from_html() {
@@ -572,9 +572,11 @@ mod tests {
             "selecting the feed is the selection"
         );
         // Zero categories is the feed's correct declaration: browsing it takes
-        // no category, and naming one is refused.
-        assert_eq!(select_category(&feed, None).unwrap(), None);
-        assert!(select_category(&feed, Some("landscapes")).is_err());
+        // no category, and naming one is refused — still true now that a
+        // selection is a set.
+        assert!(select_categories(&feed, &[]).unwrap().is_empty());
+        assert!(select_categories(&feed, &["landscapes".to_string()]).is_err());
+        assert!(!feed.categories_combine());
     }
 
     #[tokio::test]

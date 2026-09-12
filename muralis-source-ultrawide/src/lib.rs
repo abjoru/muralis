@@ -66,8 +66,13 @@ const GALLERY_ENDPOINT: &str = "https://ultrawidewallpapers.net/gallery_load.php
 pub(crate) const GALLERY_PAGE: &str = "https://ultrawidewallpapers.net/gallery";
 
 /// The query parameter the gallery page reads its tag selection from, so a
-/// link-back opens on the tag the **Preview** was browsed under.
+/// link-back opens on the selection the **Preview** was browsed under.
 const GALLERY_TAGS_PARAM: &str = "tags";
+
+/// How the endpoint spells an intersection: one comma-separated value, not a
+/// repeated parameter. A selection of several tags answers with the cards
+/// carrying all of them.
+const TAG_SEPARATOR: &str = ",";
 
 /// Outbound requests say who is asking. Part of the access posture: this
 /// Source is a user-initiated renderer, and an operator reading their logs
@@ -240,6 +245,15 @@ impl WallpaperSource for UltrawideSource {
         self.categories.clone()
     }
 
+    /// The site's tags intersect: the **Gallery endpoint** takes a
+    /// comma-separated list and answers with the cards carrying *all* of them.
+    /// That is the whole reason this Source browses the endpoint rather than
+    /// the retired **Category pages**, which could only ever be asked for one
+    /// thing at a time.
+    fn categories_combine(&self) -> bool {
+        true
+    }
+
     async fn search(
         &self,
         _query: &str,
@@ -258,21 +272,23 @@ impl WallpaperSource for UltrawideSource {
 
     /// One logical page, one request: the window is asked for by `offset` and
     /// `limit`, so nothing larger is fetched and nothing is sliced afterwards.
+    /// Several tags are one request too — the endpoint intersects them — so
+    /// narrowing costs no more traffic than browsing one.
     async fn browse(
         &self,
-        category: Option<&str>,
+        categories: &[String],
         page: u32,
         per_page: u32,
         aspect: AspectRatioFilter,
     ) -> Result<Vec<WallpaperPreview>> {
-        let tag = category.ok_or_else(|| {
-            source_error(
+        if categories.is_empty() {
+            return Err(source_error(
                 "browse",
                 format!("{DISPLAY_NAME} publishes categories; name one with --category"),
-            )
-        })?;
+            ));
+        }
         let offset = page.saturating_sub(1).saturating_mul(per_page);
-        let url = gallery_request(tag, offset, per_page);
+        let url = gallery_request(categories, offset, per_page);
         let (status, body) = self
             .http
             .get(&url, &[("User-Agent", user_agent())], &[])
@@ -280,11 +296,14 @@ impl WallpaperSource for UltrawideSource {
         if !status.is_success() {
             return Err(source_error(
                 "browse",
-                format!("{DISPLAY_NAME}: tag '{tag}' returned HTTP {status} for {url}"),
+                format!(
+                    "{DISPLAY_NAME}: tag '{tags}' returned HTTP {status} for {url}",
+                    tags = tag_list(categories)
+                ),
             ));
         }
         let html = String::from_utf8_lossy(&body);
-        let mut previews = parse_gallery(&html, tag, &url)?;
+        let mut previews = parse_gallery(&html, categories, &url)?;
 
         // The masters are uniform, so this keeps everything or nothing — which
         // is the contract: a filter excluding 32:9 correctly gets no answer
@@ -405,24 +424,36 @@ fn source_error(op: &str, kind: impl Into<String>) -> MuralisError {
     }
 }
 
-/// The **Gallery endpoint** request for one window of one tag, built whole so
-/// the URL that is fetched and the URL a failure names are the same string.
-/// Tags carry spaces and punctuation (`Pixel Art`, `Crops great @ 16:9`), so
-/// the encoding happens here rather than in a format string.
-pub(crate) fn gallery_request(tag: &str, offset: u32, limit: u32) -> String {
+/// A selection as the endpoint spells it: comma-separated, in the order it was
+/// handed over — which is the canonical published order, resolved once by
+/// `select_categories`, so the same set never produces two different strings.
+fn tag_list<S: AsRef<str>>(tags: &[S]) -> String {
+    tags.iter()
+        .map(AsRef::as_ref)
+        .collect::<Vec<_>>()
+        .join(TAG_SEPARATOR)
+}
+
+/// The **Gallery endpoint** request for one window of one *selection*, built
+/// whole so the URL that is fetched and the URL a failure names are the same
+/// string. Several tags are the intersection of all of them. Tags carry spaces
+/// and punctuation (`Pixel Art`, `Crops great @ 16:9`), so the encoding — of
+/// the separator included — happens here rather than in a format string.
+pub(crate) fn gallery_request<S: AsRef<str>>(tags: &[S], offset: u32, limit: u32) -> String {
     let mut url = Url::parse(GALLERY_ENDPOINT).expect("a valid endpoint URL");
     url.query_pairs_mut()
         .append_pair("offset", &offset.to_string())
         .append_pair("limit", &limit.to_string())
-        .append_pair("tag", tag);
+        .append_pair("tag", &tag_list(tags));
     url.into()
 }
 
-/// The gallery page as a human would open it, filtered to `tag` — what a
-/// **Preview** links back to.
-fn gallery_page_for(tag: &str) -> String {
+/// The gallery page as a human would open it, filtered to the same selection —
+/// what a **Preview** links back to.
+fn gallery_page_for<S: AsRef<str>>(tags: &[S]) -> String {
     let mut url = Url::parse(GALLERY_PAGE).expect("a valid gallery URL");
-    url.query_pairs_mut().append_pair(GALLERY_TAGS_PARAM, tag);
+    url.query_pairs_mut()
+        .append_pair(GALLERY_TAGS_PARAM, &tag_list(tags));
     url.into()
 }
 
@@ -449,13 +480,18 @@ fn shell_arg(value: &str) -> String {
 /// the empty result muralis already treats as the end. A fragment that
 /// arrived with content in it and yielded no card is the opposite: an upstream
 /// markup change, reported loudly so it stays diagnosable.
-fn parse_gallery(fragment: &str, tag: &str, request: &str) -> Result<Vec<WallpaperPreview>> {
+fn parse_gallery<S: AsRef<str>>(
+    fragment: &str,
+    tags: &[S],
+    request: &str,
+) -> Result<Vec<WallpaperPreview>> {
     if fragment.trim().is_empty() {
         return Ok(Vec::new());
     }
     let doc = Html::parse_fragment(fragment);
     let base = Url::parse(BASE_URL).map_err(|e| source_error("browse", e.to_string()))?;
-    let link_back = gallery_page_for(tag);
+    let link_back = gallery_page_for(tags);
+    let tag = tag_list(tags);
     let mut seen: Vec<String> = Vec::new();
     let mut previews = Vec::new();
 
@@ -492,7 +528,11 @@ fn parse_gallery(fragment: &str, tag: &str, request: &str) -> Result<Vec<Wallpap
             full_url: absolute(&base, href),
             width: MASTER_WIDTH,
             height: MASTER_HEIGHT,
-            tags: vec![tag.to_string(), "ultrawidewallpapers.net".to_string()],
+            tags: tags
+                .iter()
+                .map(|t| t.as_ref().to_string())
+                .chain(std::iter::once("ultrawidewallpapers.net".to_string()))
+                .collect(),
         });
     }
 
@@ -533,6 +573,7 @@ fn absolute(base: &Url, href: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use muralis_core::sources::select_categories;
     use muralis_source_common::testing::StubFetch;
 
     /// Two windows of the gallery endpoint: offsets 0 and 24, limit 24, tag
@@ -541,6 +582,9 @@ mod tests {
     const PAGE_2: &str = include_str!("../tests/fixtures/gallery-dark-page-2.html");
     /// The same window with the filename attribute renamed: markup drift.
     const DRIFTED: &str = include_str!("../tests/fixtures/gallery-drifted.html");
+    /// The `Dark` window narrowed by a second tag: the six of its
+    /// twenty-four cards that also carry `Space`.
+    const INTERSECTION: &str = include_str!("../tests/fixtures/gallery-dark-space.html");
 
     fn source_from(stub: Arc<StubFetch>) -> UltrawideSource {
         UltrawideSource::new(stub, &tags(&["Dark"]), &SourceContext::default())
@@ -563,7 +607,7 @@ mod tests {
         let src = source_from(stub.clone());
 
         let previews = src
-            .browse(Some("Dark"), 2, 24, AspectRatioFilter::All)
+            .browse(&tags(&["Dark"]), 2, 24, AspectRatioFilter::All)
             .await
             .expect("the captured fragment parses");
 
@@ -578,6 +622,165 @@ mod tests {
         assert_eq!((previews[0].width, previews[0].height), (7680, 2160));
     }
 
+    /// The endpoint intersects a comma-separated tag list, and that is the
+    /// feature the **Category page** model could not express. Pinned against
+    /// a fixture rather than a live request: the narrowing is upstream
+    /// behaviour, but that muralis *asks* for it in one request is ours.
+    #[tokio::test]
+    async fn two_tags_are_one_request_for_strictly_fewer_results_than_either_alone() {
+        let stub = Arc::new(StubFetch::ok_pages(&[PAGE_1, INTERSECTION]));
+        let src = UltrawideSource::new(
+            stub.clone(),
+            &tags(&["Dark", "Space"]),
+            &SourceContext::default(),
+        );
+
+        let one = src
+            .browse(&tags(&["Dark"]), 1, 24, AspectRatioFilter::All)
+            .await
+            .unwrap();
+        let both = src
+            .browse(&tags(&["Dark", "Space"]), 1, 24, AspectRatioFilter::All)
+            .await
+            .unwrap();
+
+        assert!(
+            both.len() < one.len(),
+            "an intersection is narrower: {} vs {}",
+            both.len(),
+            one.len()
+        );
+        assert!(
+            !both.is_empty(),
+            "and it is not empty for an overlapping pair"
+        );
+
+        let calls = stub.calls();
+        assert_eq!(calls.len(), 2, "one request per browse, however many tags");
+        assert_eq!(
+            calls[1].url,
+            "https://ultrawidewallpapers.net/gallery_load.php\
+             ?offset=0&limit=24&tag=Dark%2CSpace",
+            "the endpoint takes the intersection as one comma-separated value"
+        );
+    }
+
+    /// `select_categories` canonicalises a selection, so ordering and repeats
+    /// are resolved before the Source sees them — and the request the Source
+    /// builds is the same string either way round. Asserted over the whole
+    /// path, since that is where a cache key or a comparison would be fooled.
+    #[tokio::test]
+    async fn the_same_set_of_tags_however_typed_is_one_request() {
+        let stub = Arc::new(StubFetch::ok(INTERSECTION));
+        let src = UltrawideSource::new(
+            stub.clone(),
+            &tags(&["Dark", "Space"]),
+            &SourceContext::default(),
+        );
+
+        for typed in [
+            tags(&["Dark", "Space"]),
+            tags(&["Space", "Dark"]),
+            tags(&["Space", "Dark", "Space"]),
+        ] {
+            let selection = select_categories(&src, &typed).expect("every tag is published");
+            src.browse(&selection, 1, 24, AspectRatioFilter::All)
+                .await
+                .unwrap();
+        }
+
+        let urls: Vec<String> = stub.calls().iter().map(|c| c.url.clone()).collect();
+        assert_eq!(urls.len(), 3);
+        assert!(
+            urls.iter().all(|u| u == &urls[0]),
+            "order and repeats are not part of the selection: {urls:?}"
+        );
+    }
+
+    /// The combination is declared, not inferred — it is what lets the
+    /// contract hand this Source more than one tag at all.
+    #[tokio::test]
+    async fn the_source_declares_that_its_tags_combine() {
+        let src = source(PAGE_1);
+
+        assert!(src.categories_combine());
+        assert_eq!(
+            select_categories(&src, &tags(&["Dark"])).unwrap(),
+            tags(&["Dark"])
+        );
+    }
+
+    /// A **Preview** from a combined selection carries every tag it was
+    /// browsed under, and links back to the gallery filtered to the same set —
+    /// so the way back to a result is the selection that produced it.
+    #[tokio::test]
+    async fn a_preview_of_a_combined_selection_carries_and_links_back_to_the_whole_set() {
+        let previews = source(INTERSECTION)
+            .browse(&tags(&["Dark", "Space"]), 1, 24, AspectRatioFilter::All)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            previews[0].tags,
+            vec!["Dark", "Space", "ultrawidewallpapers.net"]
+        );
+        assert_eq!(
+            previews[0].source_url,
+            "https://ultrawidewallpapers.net/gallery?tags=Dark%2CSpace"
+        );
+    }
+
+    /// Paging is the endpoint's own, so it pages *within* the intersection:
+    /// two logical pages of a combined selection are two windows and do not
+    /// overlap.
+    #[tokio::test]
+    async fn a_combined_selection_pages_within_itself() {
+        let stub = Arc::new(StubFetch::ok_pages(&[PAGE_1, PAGE_2]));
+        let src = UltrawideSource::new(
+            stub.clone(),
+            &tags(&["Dark", "Space"]),
+            &SourceContext::default(),
+        );
+        let selection = tags(&["Dark", "Space"]);
+
+        let first = src
+            .browse(&selection, 1, 24, AspectRatioFilter::All)
+            .await
+            .unwrap();
+        let second = src
+            .browse(&selection, 2, 24, AspectRatioFilter::All)
+            .await
+            .unwrap();
+
+        let urls: Vec<String> = stub.calls().iter().map(|c| c.url.clone()).collect();
+        assert!(urls[0].contains("offset=0") && urls[0].contains("tag=Dark%2CSpace"));
+        assert!(urls[1].contains("offset=24") && urls[1].contains("tag=Dark%2CSpace"));
+
+        let ids = |ps: &[WallpaperPreview]| -> Vec<String> {
+            ps.iter().map(|p| p.source_id.clone()).collect()
+        };
+        let (a, b) = (ids(&first), ids(&second));
+        assert!(
+            a.iter().all(|id| !b.contains(id)),
+            "pages of a selection are disjoint"
+        );
+    }
+
+    /// An unpublished tag never reaches the network: the endpoint answers it
+    /// with the same empty fragment it answers a real tag with no matches,
+    /// so a typo would otherwise read as "nothing found".
+    #[tokio::test]
+    async fn an_unpublished_tag_is_refused_before_a_request_is_made() {
+        let stub = Arc::new(StubFetch::ok(PAGE_1));
+        let src = source_from(stub.clone());
+
+        let err = select_categories(&src, &tags(&["Drak"]))
+            .expect_err("a typo is not a tag the site publishes");
+
+        assert!(err.to_string().contains("Dark"), "{err}");
+        assert!(stub.calls().is_empty(), "and nothing was asked upstream");
+    }
+
     /// Server-side paging: two logical pages are two windows, each fetched
     /// once, and what they return does not overlap. Under the retired
     /// **Category page** model both pages were slices of one refetched page.
@@ -587,11 +790,11 @@ mod tests {
         let src = source_from(stub.clone());
 
         let first = src
-            .browse(Some("Dark"), 1, 24, AspectRatioFilter::All)
+            .browse(&tags(&["Dark"]), 1, 24, AspectRatioFilter::All)
             .await
             .unwrap();
         let second = src
-            .browse(Some("Dark"), 2, 24, AspectRatioFilter::All)
+            .browse(&tags(&["Dark"]), 2, 24, AspectRatioFilter::All)
             .await
             .unwrap();
 
@@ -617,7 +820,7 @@ mod tests {
     #[tokio::test]
     async fn a_page_of_results_names_each_master_once() {
         let previews = source(PAGE_1)
-            .browse(Some("Dark"), 1, 24, AspectRatioFilter::All)
+            .browse(&tags(&["Dark"]), 1, 24, AspectRatioFilter::All)
             .await
             .unwrap();
 
@@ -634,7 +837,7 @@ mod tests {
     #[tokio::test]
     async fn an_empty_fragment_is_the_end_of_the_results_rather_than_an_error() {
         let past_the_end = source("")
-            .browse(Some("Dark"), 500, 24, AspectRatioFilter::All)
+            .browse(&tags(&["Dark"]), 500, 24, AspectRatioFilter::All)
             .await
             .expect("an empty window is an answer");
 
@@ -653,7 +856,12 @@ mod tests {
         );
 
         let previews = src
-            .browse(Some("Crops great @ 16:9"), 1, 24, AspectRatioFilter::All)
+            .browse(
+                &tags(&["Crops great @ 16:9"]),
+                1,
+                24,
+                AspectRatioFilter::All,
+            )
             .await
             .expect("a punctuated tag is browsable");
 
@@ -675,7 +883,7 @@ mod tests {
     async fn the_aspect_filter_is_honoured_against_the_masters_true_dimensions() {
         let at = |aspect| async move {
             source(PAGE_1)
-                .browse(Some("Dark"), 1, 24, aspect)
+                .browse(&tags(&["Dark"]), 1, 24, aspect)
                 .await
                 .expect("a filter that matches nothing is still a parsed window")
                 .len()
@@ -697,7 +905,7 @@ mod tests {
         );
 
         let previews = demanding
-            .browse(Some("Dark"), 1, 24, AspectRatioFilter::All)
+            .browse(&tags(&["Dark"]), 1, 24, AspectRatioFilter::All)
             .await
             .unwrap();
 
@@ -709,7 +917,7 @@ mod tests {
         let stub = Arc::new(StubFetch::ok(PAGE_1));
         let src = source_from(stub.clone());
 
-        src.browse(Some("Dark"), 1, 24, AspectRatioFilter::All)
+        src.browse(&tags(&["Dark"]), 1, 24, AspectRatioFilter::All)
             .await
             .unwrap();
 
@@ -735,7 +943,7 @@ mod tests {
     #[tokio::test]
     async fn a_fragment_whose_card_markup_changed_fails_loudly_naming_source_tag_and_request() {
         let err = source(DRIFTED)
-            .browse(Some("Dark"), 1, 24, AspectRatioFilter::All)
+            .browse(&tags(&["Dark"]), 1, 24, AspectRatioFilter::All)
             .await
             .expect_err("an unparseable fragment is not an empty window");
         let msg = err.to_string();
@@ -761,7 +969,7 @@ mod tests {
         assert_ne!(placeholder, PAGE_1, "a thumbnail was replaced");
 
         let err = source(&placeholder)
-            .browse(Some("Dark"), 1, 24, AspectRatioFilter::All)
+            .browse(&tags(&["Dark"]), 1, 24, AspectRatioFilter::All)
             .await
             .expect_err("a placeholder is not a thumbnail URL");
         let msg = err.to_string();
@@ -775,7 +983,7 @@ mod tests {
     #[tokio::test]
     async fn a_browsed_card_becomes_a_preview_keyed_on_its_filename_and_linked_back() {
         let previews = source(PAGE_1)
-            .browse(Some("Dark"), 1, 24, AspectRatioFilter::All)
+            .browse(&tags(&["Dark"]), 1, 24, AspectRatioFilter::All)
             .await
             .expect("the captured fragment parses");
 
@@ -947,7 +1155,7 @@ mod tests {
     #[tokio::test]
     async fn a_window_the_site_refuses_is_an_error_rather_than_an_empty_page() {
         let err = source_from(Arc::new(StubFetch::status(503)))
-            .browse(Some("Dark"), 1, 24, AspectRatioFilter::All)
+            .browse(&tags(&["Dark"]), 1, 24, AspectRatioFilter::All)
             .await
             .expect_err("a 503 is not the end of the results");
 
@@ -1033,7 +1241,7 @@ mod tests {
     #[tokio::test]
     async fn a_wallpaper_kept_before_the_retarget_is_still_reported_as_favorited() {
         let kept = source(PAGE_1)
-            .browse(Some("Dark"), 1, 24, AspectRatioFilter::All)
+            .browse(&tags(&["Dark"]), 1, 24, AspectRatioFilter::All)
             .await
             .expect("the captured fragment parses")
             .remove(0);
