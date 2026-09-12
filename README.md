@@ -288,24 +288,28 @@ url = "https://www.reddit.com/r/ImaginaryLandscapes/.rss"
 
 #### Ultrawide (browsed)
 
-[ultrawidewallpapers.net](https://www.ultrawidewallpapers.net/) has no API and no
-search — only category pages. It is therefore a *browsed* source: no query, no
-search field, reached by category.
+[ultrawidewallpapers.net](https://ultrawidewallpapers.net/) has no API and no
+text search. What it does have is a gallery endpoint taking an offset, a limit
+and a tag. It is therefore a *browsed* source: no query, no search field,
+reached by tag — and its categories **are** the site's tags.
 
 ```toml
 [sources.ultrawide]
 enabled = true
-# Omit `categories` for the shipped default set:
-# categories = ["32-9-wallpapers", "dark-ultrawide-wallpapers", "space-wallpapers"]
+# Omit `tags` for the whole published vocabulary (28 of them):
+# tags = ["Dark", "Space", "Pixel Art"]
 ```
 
 ```bash
-muralis sources list                                            # slugs it publishes
-muralis browse Ultrawide --category 32-9-wallpapers
+muralis sources list                                            # tags it publishes
+muralis browse Ultrawide --category Dark
+
+# Tags carry spaces and punctuation, so quote them on a shell.
+muralis browse Ultrawide --category 'Pixel Art'
 
 # Keeping a browsed result: hand the result over, don't paste its source_url —
-# that names the category page, which every wallpaper on it shares.
-muralis browse Ultrawide --category space-wallpapers \
+# that names the gallery, which every wallpaper listed on it shares.
+muralis browse Ultrawide --category Space \
   | jq -c '.results[0]' | muralis favorites keep
 ```
 

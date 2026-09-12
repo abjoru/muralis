@@ -4,15 +4,21 @@
 #
 # Deliberately NOT part of CI: it reaches the network, so it never runs on push
 # or pull request, and `cargo test --workspace` stays offline and deterministic.
-# One page fetch per run plus four one-byte verification requests, weekly, all
-# identifying muralis — the Access posture the Source keeps at runtime applies
-# to its monitoring too.
+# One window of the gallery endpoint per run, one gallery page, plus four
+# one-byte verification requests, weekly, all identifying muralis — the Access
+# posture the Source keeps at runtime applies to its monitoring too.
 #
 # "Did anything parse?" is not the question it asks. The Source once shipped
 # reading `src` on a page that lazy-loads, and every Preview it produced carried
 # a 1x1 placeholder: a full complement of cards, none of them usable. So the
-# check asks whether what parsed is usable, and its report names which of those
-# questions failed — cards-present, fields-usable, card-count, urls-resolve.
+# check asks whether what parsed is usable, and its report names which question
+# failed — cards-present, fields-usable, card-count, tag-vocabulary or
+# urls-resolve.
+#
+# tag-vocabulary is the one the markup cannot answer: the endpoint returns an
+# empty fragment for a tag it does not know, exactly as it does for a real tag
+# with nothing in it, so a shipped tag the site has dropped reads to a user as
+# "nothing found". Catching that weekly beats catching it by report.
 name: Ultrawide drift check
 
 on:
@@ -21,10 +27,10 @@ on:
     - cron: '17 6 * * 1'
   workflow_dispatch:
     inputs:
-      category:
-        description: Category slug to check
+      tag:
+        description: Tag to check
         required: false
-        default: 32-9-wallpapers
+        default: Dark
 
 permissions:
   contents: read
@@ -38,7 +44,7 @@ jobs:
   drift:
     runs-on: ubuntu-latest
     env:
-      CATEGORY: ${{ inputs.category || '32-9-wallpapers' }}
+      TAG: ${{ inputs.tag || 'Dark' }}
 
     steps:
       - uses: actions/checkout@v4
@@ -53,11 +59,11 @@ jobs:
         # its exit code is the check's own.
         run: cargo build --quiet -p muralis-source-ultrawide --example drift-check
 
-      - name: Fetch one category page and ask whether the production parser still yields usable cards
+      - name: Fetch one window and ask whether the production parser still yields usable cards
         id: check
         run: |
           set +e
-          report=$(./target/debug/examples/drift-check "$CATEGORY")
+          report=$(./target/debug/examples/drift-check "$TAG")
           code=$?
           set -e
           echo "$report"
@@ -80,7 +86,7 @@ jobs:
           REPORT: ${{ steps.check.outputs.report }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
-          title="Ultrawide Source: the live '$CATEGORY' page no longer yields usable cards"
+          title="Ultrawide Source: the live gallery no longer answers tag '$TAG' usably"
           body=$(printf '%s\n\n---\nFound by the weekly drift check: %s\n\nRefreshing the fixture is a human decision — a new capture is a new parser contract.\n' "$REPORT" "$RUN_URL")
           existing=$(gh issue list --state open --search "in:title $title" \
             --json number,title --jq "map(select(.title == \"$title\")) | .[0].number // empty")

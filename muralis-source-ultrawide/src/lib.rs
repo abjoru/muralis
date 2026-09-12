@@ -1,16 +1,25 @@
 //! ultrawidewallpapers.net as a **Browsed Source**.
 //!
-//! The site publishes no API, no feed and no text search: its only
-//! navigational dimension is a category slug, and there are no per-wallpaper
-//! detail pages. So this is not a **RestSource** — there is no paged JSON to
-//! descriptor-drive. Its nearest sibling is the **Feed Source**: non-REST,
-//! parsing markup, browsed rather than searched.
+//! The site publishes no API, no feed and no text search. What it does publish
+//! is a **Gallery endpoint** — the one its own page calls as you scroll —
+//! taking a zero-based offset, a limit and a comma-separated tag list, and
+//! answering with an HTML fragment of bare cards. So this is not a
+//! **RestSource**: there is no paged JSON to descriptor-drive. Its nearest
+//! sibling is the **Feed Source** — non-REST, parsing markup, browsed rather
+//! than searched.
+//!
+//! Its **Categories** are the site's tags. The curated **Category pages** it
+//! used to browse are retired: they exposed 8 hand-picked slugs out of 78,
+//! most of them resolution-flavoured and filtering nothing; they had no
+//! pagination, so a logical page was a slice of one refetched 192-card page;
+//! and they lazy-loaded three cards in four. The endpoint answers all three.
 //!
 //! Access posture is part of the contract, not an optimisation (see the epic):
-//! a category page is fetched only in response to a user action, never
-//! speculatively and never on a timer; outbound requests identify muralis;
-//! every **Preview** links back to the site; and nothing is enumerated beyond
-//! what a category page publicly lists.
+//! a request is made only in response to a user action, never speculatively
+//! and never on a timer, and it asks for exactly the window being displayed —
+//! `limit` is uncapped upstream and that stays out of bounds. Outbound
+//! requests identify muralis; every **Preview** links back to the site; and
+//! nothing is enumerated beyond what one window returns.
 
 use std::sync::{Arc, LazyLock};
 
@@ -28,7 +37,7 @@ use muralis_source_common::{HttpFetch, ReqwestFetch};
 pub mod drift;
 
 pub use drift::{
-    check_live_category, check_live_category_with, DriftCheck, DriftFailure, DriftLimits,
+    check_live_gallery, check_live_gallery_with, DriftCheck, DriftFailure, DriftLimits,
 };
 
 /// Stable identity for this host, so its filename-shaped `source_id`s cannot
@@ -40,9 +49,25 @@ const SOURCE_TYPE: &str = "ultrawide";
 /// reason. Cosmetic, and deliberately separate from `SOURCE_TYPE` above.
 const DISPLAY_NAME: &str = "Ultrawide";
 
-/// The site, canonical host included — every category page and every master
-/// hangs off it, and `resolve_url` matches against it before parsing an id.
-const BASE_URL: &str = "https://www.ultrawidewallpapers.net/";
+/// The site, canonical host included — every master hangs off it, and
+/// `resolve_url` matches against it before parsing an id. The apex, not `www.`:
+/// the site redirects `www.` here, and a request that has to be redirected is
+/// two requests.
+const BASE_URL: &str = "https://ultrawidewallpapers.net/";
+
+/// The **Gallery endpoint**: the site's own infinite scroll calls it, and it is
+/// the whole of this Source's retrieval. Takes `offset`, `limit` and an
+/// optional comma-separated `tag`, and answers with a fragment of bare cards.
+const GALLERY_ENDPOINT: &str = "https://ultrawidewallpapers.net/gallery_load.php";
+
+/// The human-facing page behind the endpoint. Two things read it: a
+/// **Preview**'s `source_url` link-back, and the **Drift check**'s question
+/// about whether the shipped tag vocabulary still matches what it publishes.
+pub(crate) const GALLERY_PAGE: &str = "https://ultrawidewallpapers.net/gallery";
+
+/// The query parameter the gallery page reads its tag selection from, so a
+/// link-back opens on the tag the **Preview** was browsed under.
+const GALLERY_TAGS_PARAM: &str = "tags";
 
 /// Outbound requests say who is asking. Part of the access posture: this
 /// Source is a user-initiated renderer, and an operator reading their logs
@@ -58,46 +83,73 @@ fn user_agent() -> &'static str {
 const MASTER_WIDTH: u32 = 7680;
 const MASTER_HEIGHT: u32 = 2160;
 
-/// The thumbnail width the site's own category pages request.
-const THUMB_WIDTH: u32 = 386;
+/// The thumbnail width the gallery asks its own resize endpoint for.
+const THUMB_WIDTH: u32 = 400;
 
-/// One card on a category page: an anchor to the full-resolution master
-/// carrying the filename, wrapping the thumbnail `<img>`.
+/// One card in the endpoint's fragment: an anchor to the full-resolution
+/// master carrying the filename, wrapping the thumbnail `<img>`.
 static CARD_SEL: LazyLock<Selector> =
     LazyLock::new(|| Selector::parse("a[data-filename][href]").expect("valid selector"));
-/// The `<img>` itself, not `img[src]`: a lazy card's real URL may sit in
-/// `data-src` with `src` absent entirely, and such a card is still a card.
 static THUMB_SEL: LazyLock<Selector> =
     LazyLock::new(|| Selector::parse("img").expect("valid selector"));
 
-/// Where a card's thumbnail URL can live, in the order the site uses them.
-/// Most cards are lazy-loaded: `src` holds a 1x1 transparent GIF and the site's
-/// own script promotes `data-src` into it on scroll. A placeholder is a valid
-/// image that loads successfully and paints nothing, so reading `src` blindly
-/// fails silently — the grid renders blank and nothing errors.
-const THUMB_ATTRS: [&str; 2] = ["src", "data-src"];
+/// Where a card's thumbnail URL lives. One attribute, not two: the endpoint
+/// writes the real URL into `src` and leaves the deferral to the browser's own
+/// `loading="lazy"`, so the 1x1 placeholder the **Category pages** needed
+/// `data-src` for is not part of this contract. The value is still checked
+/// rather than trusted — a `data:` URI is a value, not a location, and a
+/// placeholder loads successfully and paints nothing, so a **Preview**
+/// carrying one fails *silently*.
+const THUMB_ATTR: &str = "src";
 
-/// The shipped category set, used when config names none: a short, useful
-/// selection rather than all ~88 slugs the site's sitemap lists, which would
-/// make an unusable menu and go stale silently. Slugs come from config; the
-/// site's navigation is never scraped to discover them.
-const DEFAULT_CATEGORIES: &[&str] = &[
-    "32-9-wallpapers",
-    "super-ultrawide-wallpapers",
-    "dark-ultrawide-wallpapers",
-    "gaming-ultrawide-wallpapers",
-    "space-wallpapers",
-    "nature-wallpapers",
-    "abstract-wallpapers",
-    "minimalist-wallpapers",
+/// The tag vocabulary the site publishes on its gallery page, shipped whole:
+/// 28 names, in the site's own casing and order. Unlike the ~88 category slugs
+/// this replaced, every one of these narrows something real, so there is no
+/// taste call left to make — config names a subset when a shorter menu is
+/// wanted. The site's navigation is never scraped at runtime to discover them;
+/// the **Drift check** asks weekly whether this list still matches.
+pub const DEFAULT_TAGS: &[&str] = &[
+    "Abandoned",
+    "Abstract",
+    "Animals",
+    "Architecture",
+    "Colorful",
+    "Crops great @ 16:9",
+    "Cute",
+    "Cyberpunk",
+    "Dark",
+    "Fantasy",
+    "Illustration",
+    "Landscape",
+    "Monsters",
+    "OLED",
+    "Painted style",
+    "Pattern",
+    "People",
+    "Photo",
+    "Pixel Art",
+    "Plants",
+    "Realistic",
+    "Retro",
+    "Sci-fi",
+    "Space",
+    "Spaceships",
+    "Steampunk",
+    "Surreal",
+    "Vehicles",
 ];
 
 /// The `[sources.ultrawide]` subsection: off unless switched on, and an
-/// optional slug list that replaces [`DEFAULT_CATEGORIES`] when present.
+/// optional tag list that replaces [`DEFAULT_TAGS`] when present.
 #[derive(Debug, Clone, serde::Deserialize)]
 pub struct UltrawideConfig {
     #[serde(default)]
     pub enabled: bool,
+    #[serde(default)]
+    pub tags: Option<Vec<String>>,
+    /// The retired **Category page** slug list. Kept only to be recognised and
+    /// refused loudly: a config carrying it would otherwise be read as naming
+    /// no tags at all, and silently yield the whole vocabulary.
     #[serde(default)]
     pub categories: Option<Vec<String>>,
 }
@@ -120,16 +172,29 @@ pub fn create_sources(
     if !config.enabled {
         return Vec::new();
     }
-    let slugs: Vec<String> = config.categories.unwrap_or_else(|| {
-        DEFAULT_CATEGORIES
-            .iter()
-            .map(|s| (*s).to_string())
-            .collect()
-    });
+    if config.categories.is_some() {
+        tracing::warn!(
+            "ultrawide: `categories` is retired — the Source now browses the site's tags. \
+             Rename the key to `tags` and name tags from: {}",
+            DEFAULT_TAGS.join(", ")
+        );
+    }
+    let tags: Vec<String> = config
+        .tags
+        .unwrap_or_else(|| DEFAULT_TAGS.iter().map(|s| (*s).to_string()).collect());
+    for tag in &tags {
+        if !DEFAULT_TAGS.contains(&tag.as_str()) {
+            tracing::warn!(
+                "ultrawide: '{tag}' is not a tag the site publishes; browsing it will \
+                 return nothing. Published tags: {}",
+                DEFAULT_TAGS.join(", ")
+            );
+        }
+    }
 
     vec![Box::new(UltrawideSource::new(
         Arc::new(ReqwestFetch(client)),
-        &slugs,
+        &tags,
         ctx,
     ))]
 }
@@ -142,12 +207,14 @@ pub struct UltrawideSource {
 }
 
 impl UltrawideSource {
-    pub fn new(http: Arc<dyn HttpFetch>, slugs: &[String], ctx: &SourceContext) -> Self {
+    /// A tag is its own slug *and* its own label: the site publishes names a
+    /// person reads, so there is nothing to derive and nothing to prettify.
+    pub fn new(http: Arc<dyn HttpFetch>, tags: &[String], ctx: &SourceContext) -> Self {
         Self {
             http,
-            categories: slugs
+            categories: tags
                 .iter()
-                .map(|s| SourceCategory::new(s, label_for(s)))
+                .map(|t| SourceCategory::new(t.clone(), t.clone()))
                 .collect(),
             min_width: ctx.min_width,
             min_height: ctx.min_height,
@@ -184,11 +251,13 @@ impl WallpaperSource for UltrawideSource {
             "search",
             format!(
                 "{DISPLAY_NAME} is a browsed source with no query dimension; \
-                 use: muralis browse {DISPLAY_NAME} --category <slug>"
+                 use: muralis browse {DISPLAY_NAME} --category <tag>"
             ),
         ))
     }
 
+    /// One logical page, one request: the window is asked for by `offset` and
+    /// `limit`, so nothing larger is fetched and nothing is sliced afterwards.
     async fn browse(
         &self,
         category: Option<&str>,
@@ -196,13 +265,14 @@ impl WallpaperSource for UltrawideSource {
         per_page: u32,
         aspect: AspectRatioFilter,
     ) -> Result<Vec<WallpaperPreview>> {
-        let slug = category.ok_or_else(|| {
+        let tag = category.ok_or_else(|| {
             source_error(
                 "browse",
                 format!("{DISPLAY_NAME} publishes categories; name one with --category"),
             )
         })?;
-        let url = category_url(slug);
+        let offset = page.saturating_sub(1).saturating_mul(per_page);
+        let url = gallery_request(tag, offset, per_page);
         let (status, body) = self
             .http
             .get(&url, &[("User-Agent", user_agent())], &[])
@@ -210,32 +280,21 @@ impl WallpaperSource for UltrawideSource {
         if !status.is_success() {
             return Err(source_error(
                 "browse",
-                format!("{DISPLAY_NAME}: category '{slug}' returned HTTP {status} for {url}"),
+                format!("{DISPLAY_NAME}: tag '{tag}' returned HTTP {status} for {url}"),
             ));
         }
         let html = String::from_utf8_lossy(&body);
-        let mut previews = parse_category(&html, slug, &url)?;
+        let mut previews = parse_gallery(&html, tag, &url)?;
 
         // The masters are uniform, so this keeps everything or nothing — which
         // is the contract: a filter excluding 32:9 correctly gets no answer
-        // from this Source rather than a cropped one. Parsing having succeeded
-        // is established above, so an empty answer here means "no match", not
-        // "markup changed".
+        // from this Source rather than a cropped one.
         previews.retain(|p| {
             aspect.matches(p.width, p.height)
                 && p.width >= self.min_width
                 && p.height >= self.min_height
         });
-
-        // A category page has no pagination and no load-more upstream: it is a
-        // fixed, curated slice. Logical pages therefore walk *that* slice and
-        // stop, rather than reaching for a page-2 the site does not publish.
-        let skip = page.saturating_sub(1).saturating_mul(per_page) as usize;
-        Ok(previews
-            .into_iter()
-            .skip(skip)
-            .take(per_page as usize)
-            .collect())
+        Ok(previews)
     }
 
     /// Host-matched **before** an id is parsed out of the URL, so this Source
@@ -245,11 +304,11 @@ impl WallpaperSource for UltrawideSource {
         Ok(preview_from_master_url(url))
     }
 
-    /// A URL on this host that is not a master names a **page** — a category
-    /// page is one URL shared by every wallpaper listed on it, and the site
-    /// publishes no per-wallpaper detail page at all. Saying so is the whole
-    /// point: pasting a category page is a different mistake from pasting a
-    /// URL nothing here has ever heard of.
+    /// A URL on this host that is not a master names a **page** — the gallery
+    /// is one URL shared by everything it lists, and the site publishes no
+    /// per-wallpaper detail page at all. Saying so is the whole point: pasting
+    /// a listing is a different mistake from pasting a URL nothing here has
+    /// ever heard of.
     fn explain_unresolvable(&self, url: &str) -> Option<String> {
         if preview_from_master_url(url).is_some() {
             return None;
@@ -258,17 +317,20 @@ impl WallpaperSource for UltrawideSource {
         if !is_site_host(parsed.host_str()?) {
             return None;
         }
-        let slug = parsed
-            .path_segments()
-            .and_then(|mut s| s.next())
-            .filter(|s| !s.is_empty())
-            .unwrap_or("<slug>")
-            .to_string();
+        // The tag the pasted URL was listing, when it says: the way out is
+        // then the same selection, browsed.
+        let tag = parsed
+            .query_pairs()
+            .find(|(k, _)| k == GALLERY_TAGS_PARAM)
+            .map(|(_, v)| v.into_owned())
+            .or_else(|| self.categories.first().map(|c| c.slug.clone()))
+            .unwrap_or_else(|| "Dark".to_string());
         Some(format!(
-            "{DISPLAY_NAME}: {url} names a page on the site, not an image — a category page \
-             is one URL shared by every wallpaper listed on it. Keep a browsed result with: \
-             muralis browse {DISPLAY_NAME} --category {slug} | jq -c '.results[0]' | \
-             muralis favorites keep"
+            "{DISPLAY_NAME}: {url} names a page on the site, not an image — the gallery \
+             is one URL shared by everything listed on it. Keep a browsed result with: \
+             muralis browse {DISPLAY_NAME} --category {tag} | jq -c '.results[0]' | \
+             muralis favorites keep",
+            tag = shell_arg(&tag)
         ))
     }
 
@@ -343,19 +405,57 @@ fn source_error(op: &str, kind: impl Into<String>) -> MuralisError {
     }
 }
 
-fn category_url(slug: &str) -> String {
-    format!("{BASE_URL}{slug}")
+/// The **Gallery endpoint** request for one window of one tag, built whole so
+/// the URL that is fetched and the URL a failure names are the same string.
+/// Tags carry spaces and punctuation (`Pixel Art`, `Crops great @ 16:9`), so
+/// the encoding happens here rather than in a format string.
+pub(crate) fn gallery_request(tag: &str, offset: u32, limit: u32) -> String {
+    let mut url = Url::parse(GALLERY_ENDPOINT).expect("a valid endpoint URL");
+    url.query_pairs_mut()
+        .append_pair("offset", &offset.to_string())
+        .append_pair("limit", &limit.to_string())
+        .append_pair("tag", tag);
+    url.into()
 }
 
-/// Turn a category page's cards into **Previews**, in page order, one per
-/// distinct master — the site repeats a card across its carousel pages.
+/// The gallery page as a human would open it, filtered to `tag` — what a
+/// **Preview** links back to.
+fn gallery_page_for(tag: &str) -> String {
+    let mut url = Url::parse(GALLERY_PAGE).expect("a valid gallery URL");
+    url.query_pairs_mut().append_pair(GALLERY_TAGS_PARAM, tag);
+    url.into()
+}
+
+/// A value as it must be typed into a shell. One-word tags (and the display
+/// name) come back verbatim; `Pixel Art` and `Crops great @ 16:9` come back
+/// quoted, because a suggestion that does not run as written is not a
+/// suggestion.
+fn shell_arg(value: &str) -> String {
+    if !value.is_empty()
+        && value
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '/'))
+    {
+        return value.to_string();
+    }
+    format!("'{}'", value.replace('\'', r"'\''"))
+}
+
+/// Turn one window of the **Gallery endpoint** into **Previews**, in the order
+/// it listed them, one per distinct master.
 ///
-/// A page that yields no card is an error naming the source and the category
-/// rather than an empty result: an upstream markup change must be diagnosable
-/// instead of looking like an empty category.
-fn parse_category(html: &str, slug: &str, page_url: &str) -> Result<Vec<WallpaperPreview>> {
-    let doc = Html::parse_document(html);
-    let base = Url::parse(page_url).map_err(|e| source_error("browse", e.to_string()))?;
+/// An *empty* fragment is the end of the results — the endpoint's own signal
+/// for an offset past the end, and for a tag it does not know — and becomes
+/// the empty result muralis already treats as the end. A fragment that
+/// arrived with content in it and yielded no card is the opposite: an upstream
+/// markup change, reported loudly so it stays diagnosable.
+fn parse_gallery(fragment: &str, tag: &str, request: &str) -> Result<Vec<WallpaperPreview>> {
+    if fragment.trim().is_empty() {
+        return Ok(Vec::new());
+    }
+    let doc = Html::parse_fragment(fragment);
+    let base = Url::parse(BASE_URL).map_err(|e| source_error("browse", e.to_string()))?;
+    let link_back = gallery_page_for(tag);
     let mut seen: Vec<String> = Vec::new();
     let mut previews = Vec::new();
 
@@ -367,14 +467,14 @@ fn parse_category(html: &str, slug: &str, page_url: &str) -> Result<Vec<Wallpape
             continue;
         };
         // Checked for every card the selector matches, repeat or not: an
-        // unusable thumbnail is a markup change, and the page it appears on is
-        // reported rather than quietly shedding the cards it broke.
+        // unusable thumbnail is a markup change, and the window it appears in
+        // is reported rather than quietly shedding the cards it broke.
         let Some(thumb) = thumbnail_of(card) else {
             return Err(source_error(
                 "browse",
                 format!(
-                    "{DISPLAY_NAME}: category '{slug}' has a card for '{filename}' with no \
-                     fetchable thumbnail URL in any of {THUMB_ATTRS:?} at {page_url} \
+                    "{DISPLAY_NAME}: tag '{tag}' has a card for '{filename}' with no \
+                     fetchable thumbnail URL in `{THUMB_ATTR}` at {request} \
                      — the site's card markup has most likely changed"
                 ),
             ));
@@ -387,12 +487,12 @@ fn parse_category(html: &str, slug: &str, page_url: &str) -> Result<Vec<Wallpape
         previews.push(WallpaperPreview {
             source_type: SourceType::new(SOURCE_TYPE),
             source_id: filename.to_string(),
-            source_url: page_url.to_string(),
+            source_url: link_back.clone(),
             thumbnail_url: absolute(&base, thumb),
             full_url: absolute(&base, href),
             width: MASTER_WIDTH,
             height: MASTER_HEIGHT,
-            tags: vec![label_for(slug), "ultrawidewallpapers.net".to_string()],
+            tags: vec![tag.to_string(), "ultrawidewallpapers.net".to_string()],
         });
     }
 
@@ -400,26 +500,28 @@ fn parse_category(html: &str, slug: &str, page_url: &str) -> Result<Vec<Wallpape
         return Err(source_error(
             "browse",
             format!(
-                "{DISPLAY_NAME}: category '{slug}' listed no parseable cards at {page_url} \
-                 — the site's card markup has most likely changed"
+                "{DISPLAY_NAME}: tag '{tag}' returned a fragment with no parseable cards \
+                 for {request} — the site's card markup has most likely changed"
             ),
         ));
     }
     Ok(previews)
 }
 
-/// A card's thumbnail URL, from whichever attribute holds a fetchable one —
-/// `None` when nothing does, which is drift, not a Preview to emit.
+/// A card's thumbnail URL, when the attribute holds a fetchable one — `None`
+/// when it does not, which is drift, not a Preview to emit.
 fn thumbnail_of(card: scraper::ElementRef<'_>) -> Option<&str> {
     let img = card.select(&THUMB_SEL).next()?;
-    THUMB_ATTRS
-        .iter()
-        .find_map(|attr| img.value().attr(attr).map(str::trim).filter(is_fetchable))
+    img.value()
+        .attr(THUMB_ATTR)
+        .map(str::trim)
+        .filter(|v| is_fetchable(v))
 }
 
-/// A `data:` URI is a value, not a location: it is the lazy placeholder itself,
-/// and a Preview must carry something the GUI can actually fetch.
-fn is_fetchable(value: &&str) -> bool {
+/// A `data:` URI is a value, not a location: a placeholder is a valid image
+/// that loads successfully and paints nothing, so a Preview carrying one fails
+/// silently — the grid renders blank and nothing errors.
+fn is_fetchable(value: &str) -> bool {
     !value.is_empty() && !value.to_ascii_lowercase().starts_with("data:")
 }
 
@@ -428,101 +530,166 @@ fn absolute(base: &Url, href: &str) -> String {
         .map(String::from)
         .unwrap_or_else(|_| href.to_string())
 }
-
-/// A category's display label, derived from its slug: hyphens become spaces,
-/// words are capitalised, and a leading numeric pair reads as an aspect ratio
-/// (`32-9-wallpapers` → `32:9 Wallpapers`).
-fn label_for(slug: &str) -> String {
-    let words: Vec<&str> = slug.split('-').filter(|w| !w.is_empty()).collect();
-    let numeric = |w: &str| !w.is_empty() && w.chars().all(|c| c.is_ascii_digit());
-    let mut out = String::new();
-    let mut i = 0;
-    while i < words.len() {
-        if !out.is_empty() {
-            out.push(' ');
-        }
-        if numeric(words[i]) && i + 1 < words.len() && numeric(words[i + 1]) {
-            out.push_str(words[i]);
-            out.push(':');
-            out.push_str(words[i + 1]);
-            i += 2;
-            continue;
-        }
-        let mut chars = words[i].chars();
-        if let Some(first) = chars.next() {
-            out.extend(first.to_uppercase());
-            out.push_str(chars.as_str());
-        }
-        i += 1;
-    }
-    out
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use muralis_source_common::testing::StubFetch;
 
-    const CATEGORY_PAGE: &str = include_str!("../tests/fixtures/category-32-9.html");
-    const DRIFTED_PAGE: &str = include_str!("../tests/fixtures/category-drifted.html");
+    /// Two windows of the gallery endpoint: offsets 0 and 24, limit 24, tag
+    /// `Dark`. Captured from the endpoint, cards verbatim.
+    const PAGE_1: &str = include_str!("../tests/fixtures/gallery-dark-page-1.html");
+    const PAGE_2: &str = include_str!("../tests/fixtures/gallery-dark-page-2.html");
+    /// The same window with the filename attribute renamed: markup drift.
+    const DRIFTED: &str = include_str!("../tests/fixtures/gallery-drifted.html");
 
     fn source_from(stub: Arc<StubFetch>) -> UltrawideSource {
-        UltrawideSource::new(
-            stub,
-            &["32-9-wallpapers".to_string()],
-            &SourceContext::default(),
-        )
+        UltrawideSource::new(stub, &tags(&["Dark"]), &SourceContext::default())
     }
 
-    fn source(page: &str) -> UltrawideSource {
-        source_from(Arc::new(StubFetch::ok(page)))
+    fn tags(names: &[&str]) -> Vec<String> {
+        names.iter().map(|t| (*t).to_string()).collect()
     }
 
+    fn source(fragment: &str) -> UltrawideSource {
+        source_from(Arc::new(StubFetch::ok(fragment)))
+    }
+
+    /// The endpoint takes a zero-based offset and a limit, so a logical page
+    /// asks for exactly the window it will return — one request, no slice of
+    /// a larger set.
     #[tokio::test]
-    async fn browsing_a_category_yields_its_cards_at_the_masters_true_dimensions() {
-        let previews = source(CATEGORY_PAGE)
-            .browse(Some("32-9-wallpapers"), 1, 24, AspectRatioFilter::All)
-            .await
-            .expect("the captured category page parses");
+    async fn a_logical_page_asks_the_endpoint_for_exactly_the_window_it_returns() {
+        let stub = Arc::new(StubFetch::ok(PAGE_1));
+        let src = source_from(stub.clone());
 
-        assert_eq!(previews.len(), 23, "24 cards, one of them a repeat");
-        let first = &previews[0];
-        assert_eq!(first.source_type.as_str(), "ultrawide");
-        assert_eq!(first.source_id, "aishot-5774.jpg");
+        let previews = src
+            .browse(Some("Dark"), 2, 24, AspectRatioFilter::All)
+            .await
+            .expect("the captured fragment parses");
+
+        let calls = stub.calls();
+        assert_eq!(calls.len(), 1, "one request per logical page");
         assert_eq!(
-            first.full_url,
-            "https://www.ultrawidewallpapers.net/wallpapers/329/highres/aishot-5774.jpg"
+            calls[0].url,
+            "https://ultrawidewallpapers.net/gallery_load.php?offset=24&limit=24&tag=Dark",
+            "page 2 of 24 is offset 24, limit 24 — the window, and nothing larger"
         );
-        assert_eq!(
-            first.thumbnail_url,
-            "https://www.ultrawidewallpapers.net/resizecachethumbs.php?image=aishot-5774.jpg&width=386"
-        );
-        assert_eq!((first.width, first.height), (MASTER_WIDTH, MASTER_HEIGHT));
+        assert_eq!(previews.len(), 24);
+        assert_eq!((previews[0].width, previews[0].height), (7680, 2160));
     }
 
+    /// Server-side paging: two logical pages are two windows, each fetched
+    /// once, and what they return does not overlap. Under the retired
+    /// **Category page** model both pages were slices of one refetched page.
+    #[tokio::test]
+    async fn two_logical_pages_are_two_windows_fetched_once_each_and_do_not_overlap() {
+        let stub = Arc::new(StubFetch::ok_pages(&[PAGE_1, PAGE_2]));
+        let src = source_from(stub.clone());
+
+        let first = src
+            .browse(Some("Dark"), 1, 24, AspectRatioFilter::All)
+            .await
+            .unwrap();
+        let second = src
+            .browse(Some("Dark"), 2, 24, AspectRatioFilter::All)
+            .await
+            .unwrap();
+
+        let windows: Vec<String> = stub.calls().iter().map(|c| c.url.clone()).collect();
+        assert_eq!(windows.len(), 2, "one request per logical page, no refetch");
+        assert_ne!(windows[0], windows[1], "and never the same window twice");
+        assert!(windows[0].contains("offset=0"), "{windows:?}");
+        assert!(windows[1].contains("offset=24"), "{windows:?}");
+
+        let ids = |ps: &[WallpaperPreview]| -> Vec<String> {
+            ps.iter().map(|p| p.source_id.clone()).collect()
+        };
+        let (a, b) = (ids(&first), ids(&second));
+        assert!(!a.is_empty() && !b.is_empty());
+        assert!(
+            a.iter().all(|id| !b.contains(id)),
+            "page 1 and page 2 of a tag are disjoint"
+        );
+    }
+
+    /// Within one window every card is a distinct master, so a filename never
+    /// appears twice in a page of results.
+    #[tokio::test]
+    async fn a_page_of_results_names_each_master_once() {
+        let previews = source(PAGE_1)
+            .browse(Some("Dark"), 1, 24, AspectRatioFilter::All)
+            .await
+            .unwrap();
+
+        let mut ids: Vec<&str> = previews.iter().map(|p| p.source_id.as_str()).collect();
+        let total = ids.len();
+        ids.sort_unstable();
+        ids.dedup();
+        assert_eq!(ids.len(), total, "a filename appeared twice in one page");
+    }
+
+    /// The endpoint answers an offset past the end — and a tag it does not
+    /// know — with an empty fragment. That is the end of the results, which
+    /// muralis already spells as an empty page, not an error to invent.
+    #[tokio::test]
+    async fn an_empty_fragment_is_the_end_of_the_results_rather_than_an_error() {
+        let past_the_end = source("")
+            .browse(Some("Dark"), 500, 24, AspectRatioFilter::All)
+            .await
+            .expect("an empty window is an answer");
+
+        assert!(past_the_end.is_empty());
+    }
+
+    /// Tags are the site's own names, and some carry spaces and punctuation.
+    /// Encoding is the request builder's job, not the caller's.
+    #[tokio::test]
+    async fn a_tag_carrying_spaces_and_punctuation_is_encoded_into_the_request() {
+        let stub = Arc::new(StubFetch::ok(PAGE_1));
+        let src = UltrawideSource::new(
+            stub.clone(),
+            &tags(&["Crops great @ 16:9"]),
+            &SourceContext::default(),
+        );
+
+        let previews = src
+            .browse(Some("Crops great @ 16:9"), 1, 24, AspectRatioFilter::All)
+            .await
+            .expect("a punctuated tag is browsable");
+
+        assert!(!previews.is_empty());
+        assert_eq!(
+            stub.last_call().url,
+            "https://ultrawidewallpapers.net/gallery_load.php\
+             ?offset=0&limit=24&tag=Crops+great+%40+16%3A9"
+        );
+        assert_eq!(
+            previews[0].tags[0], "Crops great @ 16:9",
+            "the Preview carries the tag in its published casing"
+        );
+    }
+
+    /// Every master is one 7680x2160 image, never cropped, so a filter that
+    /// excludes 32:9 correctly gets nothing from this Source.
     #[tokio::test]
     async fn the_aspect_filter_is_honoured_against_the_masters_true_dimensions() {
         let at = |aspect| async move {
-            source(CATEGORY_PAGE)
-                .browse(Some("32-9-wallpapers"), 1, 24, aspect)
+            source(PAGE_1)
+                .browse(Some("Dark"), 1, 24, aspect)
                 .await
-                .expect("a filter that matches nothing is still a parsed page")
+                .expect("a filter that matches nothing is still a parsed window")
                 .len()
         };
 
-        assert_eq!(at(AspectRatioFilter::Ratio32x9).await, 23);
-        assert_eq!(
-            at(AspectRatioFilter::Ratio21x9).await,
-            0,
-            "every master is 32:9 and is never cropped, so 21:9 has nothing here"
-        );
+        assert_eq!(at(AspectRatioFilter::Ratio32x9).await, 24);
+        assert_eq!(at(AspectRatioFilter::Ratio21x9).await, 0);
     }
 
     #[tokio::test]
     async fn the_global_minimum_dimensions_are_applied_rather_than_assumed_satisfied() {
         let demanding = UltrawideSource::new(
-            Arc::new(StubFetch::ok(CATEGORY_PAGE)),
-            &["32-9-wallpapers".to_string()],
+            Arc::new(StubFetch::ok(PAGE_1)),
+            &tags(&["Dark"]),
             &SourceContext {
                 min_width: MASTER_WIDTH + 1,
                 ..SourceContext::default()
@@ -530,7 +697,7 @@ mod tests {
         );
 
         let previews = demanding
-            .browse(Some("32-9-wallpapers"), 1, 24, AspectRatioFilter::All)
+            .browse(Some("Dark"), 1, 24, AspectRatioFilter::All)
             .await
             .unwrap();
 
@@ -538,69 +705,109 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn paging_walks_the_one_page_the_category_lists_and_then_ends() {
-        let src = source(CATEGORY_PAGE);
-        let page = |n| async move {
-            source(CATEGORY_PAGE)
-                .browse(Some("32-9-wallpapers"), n, 10, AspectRatioFilter::All)
-                .await
-                .unwrap()
-        };
-
-        let first = page(1).await;
-        let second = page(2).await;
-        let third = page(3).await;
-        let fourth = page(4).await;
-
-        assert_eq!((first.len(), second.len(), third.len()), (10, 10, 3));
-        assert!(
-            fourth.is_empty(),
-            "past the end of a fixed slice is the established end-of-results signal"
-        );
-        let all = src
-            .browse(Some("32-9-wallpapers"), 1, 24, AspectRatioFilter::All)
-            .await
-            .unwrap();
-        assert_eq!(first[0].source_id, all[0].source_id);
-        assert_eq!(second[0].source_id, all[10].source_id);
-        assert_eq!(third[0].source_id, all[20].source_id);
-    }
-
-    #[tokio::test]
-    async fn every_outbound_request_identifies_muralis_and_asks_only_for_the_category_page() {
-        let stub = Arc::new(StubFetch::ok(CATEGORY_PAGE));
+    async fn every_outbound_request_identifies_muralis_and_asks_for_nothing_else() {
+        let stub = Arc::new(StubFetch::ok(PAGE_1));
         let src = source_from(stub.clone());
 
-        for _ in 0..2 {
-            src.browse(Some("32-9-wallpapers"), 1, 24, AspectRatioFilter::All)
-                .await
-                .unwrap();
-        }
-        let calls = stub.calls();
+        src.browse(Some("Dark"), 1, 24, AspectRatioFilter::All)
+            .await
+            .unwrap();
 
-        assert_eq!(calls.len(), 2, "one page fetch per user-initiated browse");
-        for call in &calls {
-            assert_eq!(
-                call.url,
-                "https://www.ultrawidewallpapers.net/32-9-wallpapers"
-            );
-            let ua = call
-                .header_value("User-Agent")
-                .expect("outbound requests identify muralis");
-            assert!(ua.contains("muralis"), "{ua}");
-        }
+        let call = stub.last_call();
+        let ua = call
+            .header_value("User-Agent")
+            .expect("outbound requests identify muralis");
+        assert!(ua.starts_with("muralis/"), "{ua}");
         // The Source never fetches a thumbnail: it reads the card's thumbnail
-        // URL off the page and hands it on, so browsing a category twice costs
-        // zero thumbnail fetches and a rendered thumbnail is cached locally.
+        // URL out of the fragment and hands it on, so a rendered thumbnail is
+        // cached locally rather than re-fetched per render.
         assert!(
-            calls.iter().all(|c| !c.url.contains("resizecachethumbs")),
+            stub.calls()
+                .iter()
+                .all(|c| !c.url.contains("resizecachethumbs")),
             "thumbnails are not fetched by the Source"
         );
     }
 
+    /// A fragment that arrived with content in it and yielded no card is the
+    /// opposite of an empty one: an upstream markup change, which must be
+    /// diagnosable rather than looking like the end of the results.
+    #[tokio::test]
+    async fn a_fragment_whose_card_markup_changed_fails_loudly_naming_source_tag_and_request() {
+        let err = source(DRIFTED)
+            .browse(Some("Dark"), 1, 24, AspectRatioFilter::All)
+            .await
+            .expect_err("an unparseable fragment is not an empty window");
+        let msg = err.to_string();
+
+        assert!(msg.contains(DISPLAY_NAME), "{msg}");
+        assert!(msg.contains("Dark"), "{msg}");
+        assert!(
+            msg.contains("gallery_load.php?offset=0&limit=24&tag=Dark"),
+            "the failure names the request it made: {msg}"
+        );
+    }
+
+    /// A card whose thumbnail attribute holds a placeholder rather than a URL
+    /// has nothing usable left: a `data:` URI loads successfully and paints
+    /// nothing, so emitting it would fail silently in the grid.
+    #[tokio::test]
+    async fn a_card_with_no_fetchable_thumbnail_fails_loudly_and_names_the_card() {
+        let placeholder = PAGE_1.replacen(
+            r#"src="resizecachethumbs.php?image=aishot-5787.jpg&width=400""#,
+            r#"src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==""#,
+            1,
+        );
+        assert_ne!(placeholder, PAGE_1, "a thumbnail was replaced");
+
+        let err = source(&placeholder)
+            .browse(Some("Dark"), 1, 24, AspectRatioFilter::All)
+            .await
+            .expect_err("a placeholder is not a thumbnail URL");
+        let msg = err.to_string();
+
+        assert!(msg.contains(DISPLAY_NAME), "{msg}");
+        assert!(msg.contains("aishot-5787.jpg"), "the card is named: {msg}");
+    }
+
+    /// A browsed result carries the master's true dimensions, the site's own
+    /// thumbnail URL, and a link back to the gallery filtered to its tag.
+    #[tokio::test]
+    async fn a_browsed_card_becomes_a_preview_keyed_on_its_filename_and_linked_back() {
+        let previews = source(PAGE_1)
+            .browse(Some("Dark"), 1, 24, AspectRatioFilter::All)
+            .await
+            .expect("the captured fragment parses");
+
+        let first = &previews[0];
+        assert_eq!(first.source_type.as_str(), "ultrawide");
+        assert_eq!(first.source_id, "aishot-5792.jpg");
+        assert_eq!(
+            first.full_url,
+            "https://ultrawidewallpapers.net/wallpapers/329/highres/aishot-5792.jpg"
+        );
+        assert_eq!(
+            first.thumbnail_url,
+            "https://ultrawidewallpapers.net/resizecachethumbs.php?image=aishot-5792.jpg&width=400"
+        );
+        assert_eq!(
+            first.source_url, "https://ultrawidewallpapers.net/gallery?tags=Dark",
+            "a kept image links back to the gallery on the tag it came from"
+        );
+        assert_eq!((first.width, first.height), (MASTER_WIDTH, MASTER_HEIGHT));
+        for preview in &previews {
+            assert!(
+                !preview.thumbnail_url.starts_with("data:") && !preview.thumbnail_url.is_empty(),
+                "{id}: {url}",
+                id = preview.source_id,
+                url = preview.thumbnail_url
+            );
+        }
+    }
+
     #[tokio::test]
     async fn a_master_url_resolves_to_a_preview_keyed_on_its_filename() {
-        let preview = source(CATEGORY_PAGE)
+        let preview = source(PAGE_1)
             .resolve_url(
                 "https://www.ultrawidewallpapers.net/wallpapers/329/highres/aishot-5774.jpg",
             )
@@ -611,22 +818,15 @@ mod tests {
         assert_eq!(preview.source_type.as_str(), "ultrawide");
         assert_eq!(preview.source_id, "aishot-5774.jpg");
         assert_eq!(
-            preview.full_url,
-            "https://www.ultrawidewallpapers.net/wallpapers/329/highres/aishot-5774.jpg"
-        );
-        assert_eq!(
             (preview.width, preview.height),
             (MASTER_WIDTH, MASTER_HEIGHT)
         );
-        assert!(
-            preview.source_url.contains("ultrawidewallpapers.net"),
-            "a kept image links back to the site"
-        );
+        assert!(preview.source_url.contains("ultrawidewallpapers.net"));
     }
 
     #[tokio::test]
     async fn a_url_belonging_to_another_source_is_not_claimed() {
-        let src = source(CATEGORY_PAGE);
+        let src = source(PAGE_1);
         for foreign in [
             "https://wallhaven.cc/w/abc123",
             "https://www.pexels.com/photo/whatever-12345/",
@@ -640,46 +840,58 @@ mod tests {
                 "claimed {foreign}"
             );
         }
-        // Our own host, but not a master image.
         assert!(src
-            .resolve_url("https://www.ultrawidewallpapers.net/about")
+            .resolve_url("https://ultrawidewallpapers.net/gallery")
             .await
             .unwrap()
             .is_none());
     }
 
     #[test]
-    fn a_category_page_url_is_explained_as_a_page_rather_than_left_unrecognised() {
-        let src = source(CATEGORY_PAGE);
+    fn a_gallery_url_is_explained_as_a_page_rather_than_left_unrecognised() {
+        let src = source(PAGE_1);
 
         let why = src
-            .explain_unresolvable("https://www.ultrawidewallpapers.net/space-wallpapers")
-            .expect("this Source recognises its own category page");
+            .explain_unresolvable("https://ultrawidewallpapers.net/gallery?tags=Space")
+            .expect("this Source recognises its own gallery");
 
-        assert!(why.contains("space-wallpapers"), "{why}");
         assert!(
             why.contains("page") && why.contains("not an image"),
             "the user must learn what kind of URL was expected: {why}"
         );
         assert!(
             why.contains("favorites keep"),
-            "and how to keep a browsed result instead: {why}"
+            "and how to keep instead: {why}"
         );
         assert!(
-            why.contains(&format!(
-                "muralis browse {DISPLAY_NAME} --category space-wallpapers"
-            )),
-            "the command it hands over must run as written, unquoted: {why}"
+            why.contains(&format!("muralis browse {DISPLAY_NAME} --category Space")),
+            "the way out names the tag the pasted URL was listing: {why}"
+        );
+    }
+
+    /// A suggestion that does not run as written is not a suggestion: a tag
+    /// carrying spaces comes back quoted, a one-word tag bare.
+    #[test]
+    fn a_suggested_command_is_typed_into_a_shell_verbatim() {
+        let src = source(PAGE_1);
+
+        let punctuated = src
+            .explain_unresolvable("https://ultrawidewallpapers.net/gallery?tags=Pixel+Art")
+            .expect("still our gallery");
+
+        assert!(
+            punctuated.contains("--category 'Pixel Art'"),
+            "a tag with a space is quoted: {punctuated}"
         );
     }
 
     #[test]
     fn a_url_this_source_can_resolve_or_does_not_own_gets_no_explanation() {
-        let src = source(CATEGORY_PAGE);
+        let src = source(PAGE_1);
 
         assert_eq!(
             src.explain_unresolvable(
-                "https://www.ultrawidewallpapers.net/wallpapers/329/highres/aishot-5774.jpg"
+                "https://ultrawidewallpapers.net/wallpapers/329/highres/aishot-5774.jpg"
             ),
             None,
             "a master resolves; there is nothing to explain"
@@ -700,9 +912,7 @@ mod tests {
         )]));
         let src = source_from(stub.clone());
         let preview = src
-            .resolve_url(
-                "https://www.ultrawidewallpapers.net/wallpapers/329/highres/aishot-5774.jpg",
-            )
+            .resolve_url("https://ultrawidewallpapers.net/wallpapers/329/highres/aishot-5774.jpg")
             .await
             .unwrap()
             .unwrap();
@@ -714,17 +924,14 @@ mod tests {
         assert_eq!(call.url, preview.full_url);
         assert!(call
             .header_value("User-Agent")
-            .is_some_and(|ua| ua.contains("muralis")));
+            .is_some_and(|ua| ua.starts_with("muralis/")));
     }
 
     #[tokio::test]
     async fn a_master_the_site_refuses_is_an_error_not_an_empty_file() {
-        let stub = Arc::new(StubFetch::status(403));
-        let src = source_from(stub);
+        let src = source_from(Arc::new(StubFetch::status(403)));
         let preview = src
-            .resolve_url(
-                "https://www.ultrawidewallpapers.net/wallpapers/329/highres/aishot-5774.jpg",
-            )
+            .resolve_url("https://ultrawidewallpapers.net/wallpapers/329/highres/aishot-5774.jpg")
             .await
             .unwrap()
             .unwrap();
@@ -735,6 +942,16 @@ mod tests {
             .expect_err("403 is not an image");
 
         assert!(err.to_string().contains("403"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn a_window_the_site_refuses_is_an_error_rather_than_an_empty_page() {
+        let err = source_from(Arc::new(StubFetch::status(503)))
+            .browse(Some("Dark"), 1, 24, AspectRatioFilter::All)
+            .await
+            .expect_err("a 503 is not the end of the results");
+
+        assert!(err.to_string().contains("503"), "{err}");
     }
 
     fn configured(toml_str: &str) -> Vec<Box<dyn WallpaperSource>> {
@@ -752,45 +969,73 @@ mod tests {
         );
     }
 
+    /// The whole published vocabulary ships, because every tag narrows
+    /// something real — there is no taste call left to make. Config names a
+    /// subset when a shorter menu is wanted.
     #[test]
-    fn omitting_categories_yields_the_shipped_defaults_and_naming_them_yields_exactly_those() {
+    fn omitting_tags_publishes_the_whole_vocabulary_and_naming_some_publishes_exactly_those() {
         let shipped = configured("[ultrawide]\nenabled = true");
         assert_eq!(shipped.len(), 1);
-        assert_eq!(
-            shipped[0]
-                .categories()
-                .iter()
-                .map(|c| c.slug.clone())
-                .collect::<Vec<_>>(),
-            DEFAULT_CATEGORIES
-        );
+        let published: Vec<String> = shipped[0]
+            .categories()
+            .iter()
+            .map(|c| c.slug.clone())
+            .collect();
+        assert_eq!(published, DEFAULT_TAGS);
+        assert_eq!(published.len(), 28);
+        assert!(published.contains(&"Crops great @ 16:9".to_string()));
 
         let chosen = configured(
             r#"
             [ultrawide]
             enabled = true
-            categories = ["space-wallpapers", "32-9-wallpapers"]
+            tags = ["Space", "Pixel Art"]
         "#,
         );
         assert_eq!(
             chosen[0].categories(),
             vec![
-                SourceCategory::new("space-wallpapers", "Space Wallpapers"),
-                SourceCategory::new("32-9-wallpapers", "32:9 Wallpapers"),
-            ]
+                SourceCategory::new("Space", "Space"),
+                SourceCategory::new("Pixel Art", "Pixel Art"),
+            ],
+            "a tag is its own slug and its own label"
         );
         assert_eq!(chosen[0].retrieval_mode(), RetrievalMode::Browsed);
         assert_eq!(chosen[0].source_type(), "ultrawide");
     }
 
+    /// The retired key must not read as "named no tags", which would silently
+    /// publish the whole vocabulary and look like it had been honoured.
+    #[test]
+    fn the_retired_category_slug_list_is_recognised_rather_than_silently_ignored() {
+        let stale = configured(
+            r#"
+            [ultrawide]
+            enabled = true
+            categories = ["32-9-wallpapers", "space-wallpapers"]
+        "#,
+        );
+
+        assert_eq!(stale.len(), 1, "the Source still loads");
+        assert_eq!(
+            stale[0]
+                .categories()
+                .iter()
+                .map(|c| c.slug.clone())
+                .collect::<Vec<_>>(),
+            DEFAULT_TAGS,
+            "and falls back to the vocabulary rather than to dead slugs"
+        );
+    }
+
     /// The display name is cosmetic; `source_type` is identity. A Library row
-    /// written before the rename keys on the latter, so it must survive it.
+    /// written before the retarget keys on the latter, so it must survive it.
     #[tokio::test]
-    async fn a_wallpaper_kept_before_the_rename_is_still_reported_as_favorited() {
-        let kept = source(CATEGORY_PAGE)
-            .browse(Some("32-9-wallpapers"), 1, 24, AspectRatioFilter::All)
+    async fn a_wallpaper_kept_before_the_retarget_is_still_reported_as_favorited() {
+        let kept = source(PAGE_1)
+            .browse(Some("Dark"), 1, 24, AspectRatioFilter::All)
             .await
-            .expect("the captured category page parses")
+            .expect("the captured fragment parses")
             .remove(0);
 
         let db = muralis_core::db::Database::open_in_memory().expect("in-memory Library");
@@ -807,159 +1052,34 @@ mod tests {
             last_used: None,
             use_count: 0,
         })
-        .expect("a row kept before the rename");
+        .expect("a row kept before the retarget");
 
         assert!(
             db.is_favorited_by_source(kept.source_type.as_str(), &kept.source_id)
                 .unwrap(),
-            "renaming the Source must not orphan what the Library already holds"
+            "retargeting the Source must not orphan what the Library already holds"
         );
     }
 
     #[test]
     fn the_display_name_can_be_typed_on_a_shell_without_quoting() {
-        let src = source(CATEGORY_PAGE);
-        let name = src.name();
+        let name = source(PAGE_1).name().to_string();
 
-        assert!(
-            !name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric()),
-            "a built-in Source is named on the CLI verbatim; \
-             '{name}' would need quoting or escaping"
-        );
-        assert!(
-            name.to_lowercase().contains("ultrawide"),
-            "the recognisable part of the name stays: {name}"
-        );
+        assert_eq!(shell_arg(&name), name, "'{name}' would need quoting");
+        assert!(name.to_lowercase().contains("ultrawide"), "{name}");
     }
 
     #[tokio::test]
     async fn searching_this_source_is_refused_and_points_at_browse() {
-        let err = source(CATEGORY_PAGE)
+        let err = source(PAGE_1)
             .search("sunset", 1, 24, AspectRatioFilter::All)
             .await
             .expect_err("there is no query dimension to search on");
         let msg = err.to_string();
 
-        assert!(msg.contains("browse"), "{msg}");
         assert!(
             msg.contains(&format!("muralis browse {DISPLAY_NAME} --category")),
             "the way out must be copy-pasteable as written, unquoted: {msg}"
         );
-        assert!(
-            !msg.contains(&format!("'{DISPLAY_NAME}'")),
-            "a one-word name needs no defensive quoting: {msg}"
-        );
-    }
-
-    /// The site lazy-loads most of its cards: `src` holds a 1x1 transparent
-    /// GIF and the real URL waits in `data-src` until the card scrolls into
-    /// view. A placeholder is a valid image that paints nothing, so a Preview
-    /// carrying one fails silently — the grid renders blank and nothing errors.
-    #[tokio::test]
-    async fn a_lazy_loaded_card_yields_its_real_thumbnail_rather_than_the_placeholder() {
-        let previews = source(CATEGORY_PAGE)
-            .browse(Some("32-9-wallpapers"), 1, 24, AspectRatioFilter::All)
-            .await
-            .expect("the captured category page parses");
-
-        assert!(
-            previews.iter().any(|p| p.source_id == "aishot-5771.jpg"),
-            "the fixture's second carousel page is lazy-loaded throughout"
-        );
-        for preview in &previews {
-            assert!(
-                !preview.thumbnail_url.starts_with("data:"),
-                "{id} kept the lazy placeholder: {url}",
-                id = preview.source_id,
-                url = preview.thumbnail_url
-            );
-            assert!(
-                preview.thumbnail_url.contains("resizecachethumbs"),
-                "{id}: {url}",
-                id = preview.source_id,
-                url = preview.thumbnail_url
-            );
-        }
-    }
-
-    /// The two carousel pages the fixture was trimmed to: the first eager
-    /// throughout, the second lazy throughout, overlapping on one filename —
-    /// exactly as the live page does.
-    fn carousel_pages() -> (String, String) {
-        let mut pages = CATEGORY_PAGE
-            .split(r#"<div class="carousel-page">"#)
-            .skip(1);
-        let eager = pages.next().expect("a first carousel page").to_string();
-        let lazy = pages.next().expect("a second carousel page").to_string();
-        assert!(!eager.contains("data:image/gif"), "the first page is eager");
-        assert!(lazy.contains("data:image/gif"), "the second page is lazy");
-        (eager, lazy)
-    }
-
-    fn card_for(html: &str, filename: &str) -> WallpaperPreview {
-        parse_category(html, "32-9-wallpapers", &category_url("32-9-wallpapers"))
-            .expect("a carousel page parses on its own")
-            .into_iter()
-            .find(|p| p.source_id == filename)
-            .unwrap_or_else(|| panic!("{filename} is listed on this carousel page"))
-    }
-
-    /// Only the thumbnail differs between the two card forms, and after the
-    /// fix not even that: identity, master and dimensions come from the anchor,
-    /// which is the same either way.
-    #[test]
-    fn an_eager_and_a_lazy_card_for_the_same_image_describe_it_identically() {
-        let (eager_page, lazy_page) = carousel_pages();
-
-        let eager = card_for(&eager_page, "aishot-5785.jpg");
-        let lazy = card_for(&lazy_page, "aishot-5785.jpg");
-
-        assert_eq!(eager.source_id, lazy.source_id);
-        assert_eq!(eager.full_url, lazy.full_url);
-        assert_eq!((eager.width, eager.height), (lazy.width, lazy.height));
-        assert_eq!(
-            eager.thumbnail_url, lazy.thumbnail_url,
-            "the same image has one thumbnail URL, whichever attribute held it"
-        );
-        assert!(eager.thumbnail_url.contains("resizecachethumbs"));
-    }
-
-    /// A card with a placeholder in `src` and no lazy attribute holding the
-    /// real URL has nothing usable left, and is drift like any other markup
-    /// change — not a Preview the GUI will render blank.
-    #[test]
-    fn a_card_with_no_fetchable_thumbnail_anywhere_fails_loudly_naming_source_and_category() {
-        let stripped = CATEGORY_PAGE.replace(
-            r#" data-src="resizecachethumbs.php?image=aishot-5771.jpg&width=386""#,
-            "",
-        );
-        assert_ne!(stripped, CATEGORY_PAGE, "the lazy attribute was removed");
-
-        let err = parse_category(
-            &stripped,
-            "32-9-wallpapers",
-            &category_url("32-9-wallpapers"),
-        )
-        .expect_err("a placeholder is not a thumbnail URL");
-        let msg = err.to_string();
-
-        assert!(msg.contains(DISPLAY_NAME), "{msg}");
-        assert!(msg.contains("32-9-wallpapers"), "{msg}");
-        assert!(
-            msg.contains("aishot-5771.jpg"),
-            "the offending card is named: {msg}"
-        );
-    }
-
-    #[tokio::test]
-    async fn card_markup_that_has_changed_shape_fails_loudly_naming_source_and_category() {
-        let err = source(DRIFTED_PAGE)
-            .browse(Some("32-9-wallpapers"), 1, 24, AspectRatioFilter::All)
-            .await
-            .expect_err("an unparseable page is not an empty category");
-        let msg = err.to_string();
-
-        assert!(msg.contains(DISPLAY_NAME), "{msg}");
-        assert!(msg.contains("32-9-wallpapers"), "{msg}");
     }
 }

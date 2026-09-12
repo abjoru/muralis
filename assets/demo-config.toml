@@ -113,21 +113,21 @@ enabled = false
 # user_id = "YOUR_RULE34_USER_ID"
 
 # ultrawidewallpapers.net — a BROWSED source: no query, no search field. Reach
-# it with `muralis browse Ultrawide --category <slug>`; the slugs it publishes
-# are the ones listed here. Omit `categories` for the shipped default set. Every
-# image is a 7680x2160 (32:9) master, served unaltered — an aspect filter other
-# than 32x9 (or `all`) will correctly return nothing.
+# it with `muralis browse Ultrawide --category <tag>`; the categories it
+# publishes are the site's own tags. Omit `tags` for the whole published
+# vocabulary (28 of them). Tags carry spaces and punctuation, so quote them on
+# a shell: `--category 'Pixel Art'`. Every image is a 7680x2160 (32:9) master,
+# served unaltered — an aspect filter other than 32x9 (or `all`) will correctly
+# return nothing.
 [sources.ultrawide]
 enabled = false
-# categories = [
-#   "32-9-wallpapers",
-#   "super-ultrawide-wallpapers",
-#   "dark-ultrawide-wallpapers",
-#   "gaming-ultrawide-wallpapers",
-#   "space-wallpapers",
-#   "nature-wallpapers",
-#   "abstract-wallpapers",
-#   "minimalist-wallpapers",
+# tags = [
+#   "Abandoned", "Abstract", "Animals", "Architecture", "Colorful",
+#   "Crops great @ 16:9", "Cute", "Cyberpunk", "Dark", "Fantasy",
+#   "Illustration", "Landscape", "Monsters", "OLED", "Painted style",
+#   "Pattern", "People", "Photo", "Pixel Art", "Plants", "Realistic",
+#   "Retro", "Sci-fi", "Space", "Spaceships", "Steampunk", "Surreal",
+#   "Vehicles",
 # ]
 
 [filter]
