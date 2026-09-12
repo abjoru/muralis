@@ -63,8 +63,17 @@ const THUMB_WIDTH: u32 = 386;
 /// carrying the filename, wrapping the thumbnail `<img>`.
 static CARD_SEL: LazyLock<Selector> =
     LazyLock::new(|| Selector::parse("a[data-filename][href]").expect("valid selector"));
+/// The `<img>` itself, not `img[src]`: a lazy card's real URL may sit in
+/// `data-src` with `src` absent entirely, and such a card is still a card.
 static THUMB_SEL: LazyLock<Selector> =
-    LazyLock::new(|| Selector::parse("img[src]").expect("valid selector"));
+    LazyLock::new(|| Selector::parse("img").expect("valid selector"));
+
+/// Where a card's thumbnail URL can live, in the order the site uses them.
+/// Most cards are lazy-loaded: `src` holds a 1x1 transparent GIF and the site's
+/// own script promotes `data-src` into it on scroll. A placeholder is a valid
+/// image that loads successfully and paints nothing, so reading `src` blindly
+/// fails silently — the grid renders blank and nothing errors.
+const THUMB_ATTRS: [&str; 2] = ["src", "data-src"];
 
 /// The shipped category set, used when config names none: a short, useful
 /// selection rather than all ~88 slugs the site's sitemap lists, which would
@@ -355,12 +364,18 @@ fn parse_category(html: &str, slug: &str, page_url: &str) -> Result<Vec<Wallpape
         ) else {
             continue;
         };
-        let Some(thumb) = card
-            .select(&THUMB_SEL)
-            .next()
-            .and_then(|img| img.value().attr("src"))
-        else {
-            continue;
+        // Checked for every card the selector matches, repeat or not: an
+        // unusable thumbnail is a markup change, and the page it appears on is
+        // reported rather than quietly shedding the cards it broke.
+        let Some(thumb) = thumbnail_of(card) else {
+            return Err(source_error(
+                "browse",
+                format!(
+                    "{DISPLAY_NAME}: category '{slug}' has a card for '{filename}' with no \
+                     fetchable thumbnail URL in any of {THUMB_ATTRS:?} at {page_url} \
+                     — the site's card markup has most likely changed"
+                ),
+            ));
         };
         if seen.iter().any(|s| s == filename) {
             continue;
@@ -389,6 +404,21 @@ fn parse_category(html: &str, slug: &str, page_url: &str) -> Result<Vec<Wallpape
         ));
     }
     Ok(previews)
+}
+
+/// A card's thumbnail URL, from whichever attribute holds a fetchable one —
+/// `None` when nothing does, which is drift, not a Preview to emit.
+fn thumbnail_of(card: scraper::ElementRef<'_>) -> Option<&str> {
+    let img = card.select(&THUMB_SEL).next()?;
+    THUMB_ATTRS
+        .iter()
+        .find_map(|attr| img.value().attr(attr).map(str::trim).filter(is_fetchable))
+}
+
+/// A `data:` URI is a value, not a location: it is the lazy placeholder itself,
+/// and a Preview must carry something the GUI can actually fetch.
+fn is_fetchable(value: &&str) -> bool {
+    !value.is_empty() && !value.to_ascii_lowercase().starts_with("data:")
 }
 
 fn absolute(base: &Url, href: &str) -> String {
@@ -816,6 +846,106 @@ mod tests {
         assert!(
             !msg.contains(&format!("'{DISPLAY_NAME}'")),
             "a one-word name needs no defensive quoting: {msg}"
+        );
+    }
+
+    /// The site lazy-loads most of its cards: `src` holds a 1x1 transparent
+    /// GIF and the real URL waits in `data-src` until the card scrolls into
+    /// view. A placeholder is a valid image that paints nothing, so a Preview
+    /// carrying one fails silently — the grid renders blank and nothing errors.
+    #[tokio::test]
+    async fn a_lazy_loaded_card_yields_its_real_thumbnail_rather_than_the_placeholder() {
+        let previews = source(CATEGORY_PAGE)
+            .browse(Some("32-9-wallpapers"), 1, 24, AspectRatioFilter::All)
+            .await
+            .expect("the captured category page parses");
+
+        assert!(
+            previews.iter().any(|p| p.source_id == "aishot-5771.jpg"),
+            "the fixture's second carousel page is lazy-loaded throughout"
+        );
+        for preview in &previews {
+            assert!(
+                !preview.thumbnail_url.starts_with("data:"),
+                "{id} kept the lazy placeholder: {url}",
+                id = preview.source_id,
+                url = preview.thumbnail_url
+            );
+            assert!(
+                preview.thumbnail_url.contains("resizecachethumbs"),
+                "{id}: {url}",
+                id = preview.source_id,
+                url = preview.thumbnail_url
+            );
+        }
+    }
+
+    /// The two carousel pages the fixture was trimmed to: the first eager
+    /// throughout, the second lazy throughout, overlapping on one filename —
+    /// exactly as the live page does.
+    fn carousel_pages() -> (String, String) {
+        let mut pages = CATEGORY_PAGE
+            .split(r#"<div class="carousel-page">"#)
+            .skip(1);
+        let eager = pages.next().expect("a first carousel page").to_string();
+        let lazy = pages.next().expect("a second carousel page").to_string();
+        assert!(!eager.contains("data:image/gif"), "the first page is eager");
+        assert!(lazy.contains("data:image/gif"), "the second page is lazy");
+        (eager, lazy)
+    }
+
+    fn card_for(html: &str, filename: &str) -> WallpaperPreview {
+        parse_category(html, "32-9-wallpapers", &category_url("32-9-wallpapers"))
+            .expect("a carousel page parses on its own")
+            .into_iter()
+            .find(|p| p.source_id == filename)
+            .unwrap_or_else(|| panic!("{filename} is listed on this carousel page"))
+    }
+
+    /// Only the thumbnail differs between the two card forms, and after the
+    /// fix not even that: identity, master and dimensions come from the anchor,
+    /// which is the same either way.
+    #[test]
+    fn an_eager_and_a_lazy_card_for_the_same_image_describe_it_identically() {
+        let (eager_page, lazy_page) = carousel_pages();
+
+        let eager = card_for(&eager_page, "aishot-5785.jpg");
+        let lazy = card_for(&lazy_page, "aishot-5785.jpg");
+
+        assert_eq!(eager.source_id, lazy.source_id);
+        assert_eq!(eager.full_url, lazy.full_url);
+        assert_eq!((eager.width, eager.height), (lazy.width, lazy.height));
+        assert_eq!(
+            eager.thumbnail_url, lazy.thumbnail_url,
+            "the same image has one thumbnail URL, whichever attribute held it"
+        );
+        assert!(eager.thumbnail_url.contains("resizecachethumbs"));
+    }
+
+    /// A card with a placeholder in `src` and no lazy attribute holding the
+    /// real URL has nothing usable left, and is drift like any other markup
+    /// change — not a Preview the GUI will render blank.
+    #[test]
+    fn a_card_with_no_fetchable_thumbnail_anywhere_fails_loudly_naming_source_and_category() {
+        let stripped = CATEGORY_PAGE.replace(
+            r#" data-src="resizecachethumbs.php?image=aishot-5771.jpg&width=386""#,
+            "",
+        );
+        assert_ne!(stripped, CATEGORY_PAGE, "the lazy attribute was removed");
+
+        let err = parse_category(
+            &stripped,
+            "32-9-wallpapers",
+            &category_url("32-9-wallpapers"),
+        )
+        .expect_err("a placeholder is not a thumbnail URL");
+        let msg = err.to_string();
+
+        assert!(msg.contains(DISPLAY_NAME), "{msg}");
+        assert!(msg.contains("32-9-wallpapers"), "{msg}");
+        assert!(
+            msg.contains("aishot-5771.jpg"),
+            "the offending card is named: {msg}"
         );
     }
 

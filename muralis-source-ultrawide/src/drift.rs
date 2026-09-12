@@ -31,7 +31,8 @@ static ANCHOR_SEL: LazyLock<Selector> =
 
 /// What the parser expects of a **Category page**, phrased for a maintainer
 /// reading a failed run rather than for a stack trace.
-const EXPECTED: &str = "at least one card matching `a[data-filename][href]` wrapping an `img[src]`";
+const EXPECTED: &str = "at least one card matching `a[data-filename][href]` wrapping an `img` \
+     whose `src` or `data-src` holds a fetchable thumbnail URL";
 
 /// The outcome of one drift check. Four distinct answers, because conflating
 /// them is the failure mode this exists to prevent: only [`Drifted`] means the
